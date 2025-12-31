@@ -1,14 +1,22 @@
 {
   "name": "tweets-2-bsky",
-  "version": "1.0.0",
+  "version": "1.0.1",
+  "description": "A powerful tool to crosspost Tweets to Bluesky, supporting threads, videos, and high-quality images.",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node index.js",
+    "import": "node index.js --import-history"
   },
-  "keywords": [],
+  "keywords": [
+    "bluesky",
+    "twitter",
+    "crosspost",
+    "migration",
+    "thread",
+    "video"
+  ],
   "author": "",
-  "license": "ISC",
-  "description": "",
+  "license": "MIT",
   "dependencies": {
     "@atproto/api": "^0.18.9",
     "@steipete/bird": "^0.4.0",

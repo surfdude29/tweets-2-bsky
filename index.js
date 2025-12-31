@@ -65,6 +65,8 @@ class CustomTwitterClient extends TwitterClient {
             mapped.extended_entities = result.legacy.extended_entities;
             mapped.quoted_status_id_str = result.legacy.quoted_status_id_str;
             mapped.is_quote_status = result.legacy.is_quote_status;
+            mapped.in_reply_to_status_id_str = result.legacy.in_reply_to_status_id_str;
+            mapped.in_reply_to_user_id_str = result.legacy.in_reply_to_user_id_str;
         }
         return mapped;
     }
@@ -148,15 +150,17 @@ async function processTweets(tweets, delayBetweenPosts = 0) {
         // If it's a reply to someone else (or a thread we missed), we skip it based on user preference (only original tweets).
         // User asked: "if i do it on twitter... it should continue out a thread".
         
-        const isReply = tweet.in_reply_to_status_id || tweet.in_reply_to_user_id || (tweet.full_text || tweet.text || "").trim().startsWith('@');
+        const replyStatusId = tweet.in_reply_to_status_id_str || tweet.in_reply_to_status_id;
+        const replyUserId = tweet.in_reply_to_user_id_str || tweet.in_reply_to_user_id;
+        const isReply = !!replyStatusId || !!replyUserId || (tweet.full_text || tweet.text || "").trim().startsWith('@');
+        
         let replyParentInfo = null;
 
         if (isReply) {
-             const parentId = tweet.in_reply_to_status_id;
-             if (parentId && processedTweets[parentId] && !processedTweets[parentId].migrated) {
+             if (replyStatusId && processedTweets[replyStatusId] && !processedTweets[replyStatusId].migrated) {
                  // We have the parent! We can thread this.
-                 console.log(`Threading reply to ${parentId}`);
-                 replyParentInfo = processedTweets[parentId];
+                 console.log(`Threading reply to ${replyStatusId}`);
+                 replyParentInfo = processedTweets[replyStatusId];
              } else {
                  // Reply to unknown or external -> Skip
                  console.log(`Skipping reply: ${tweetId}`);
