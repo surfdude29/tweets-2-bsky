@@ -1016,10 +1016,17 @@ async function importHistory(twitterUsername: string, limit = 15, dryRun = false
       }
     }
 
-    if (newOnes === 0 || (limit && allFoundTweets.length >= limit)) break;
+    if (newOnes === 0 && result.tweets.length > 0) {
+      console.log(`[${twitterUsername}] ⏩ Batch contained no new tweets. Continuing to older history...`);
+      updateAppStatus({ message: `Skipping seen tweets, digging deeper...` });
+    }
 
+    // Update maxId regardless of whether we found "new" ones, to keep paginating
     const lastTweet = result.tweets[result.tweets.length - 1];
     maxId = lastTweet?.id_str || lastTweet?.id || null;
+
+    if (limit && allFoundTweets.length >= limit) break;
+
     await new Promise((r) => setTimeout(r, 2000));
   }
 
