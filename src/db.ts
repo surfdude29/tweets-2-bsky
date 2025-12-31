@@ -16,20 +16,58 @@ const db = new Database(path.join(DB_DIR, 'database.sqlite'));
 // Enable WAL mode for better concurrency
 db.pragma('journal_mode = WAL');
 
-// Initialize schema
+// --- Migration Support ---
+const tableInfo = db.prepare("PRAGMA table_info(processed_tweets)").all() as any[];
+
+if (tableInfo.length > 0) {
+  const hasBskyIdentifier = tableInfo.some(col => col.name === 'bsky_identifier');
+  
+  if (!hasBskyIdentifier) {
+    console.log('🔄 Upgrading database schema to support multiple accounts...');
+    // SQLite doesn't support easy PK changes, so we recreate the table
+    db.transaction(() => {
+      db.exec(`
+        ALTER TABLE processed_tweets RENAME TO processed_tweets_old;
+        CREATE TABLE processed_tweets (
+          twitter_id TEXT NOT NULL,
+          twitter_username TEXT NOT NULL,
+          bsky_identifier TEXT NOT NULL,
+          bsky_uri TEXT,
+          bsky_cid TEXT,
+          bsky_root_uri TEXT,
+          bsky_root_cid TEXT,
+          status TEXT NOT NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (twitter_id, bsky_identifier)
+        );
+        -- Copy old data, assuming 'unknown' or trying to infer for bsky_identifier is handled during first run migration
+        INSERT INTO processed_tweets (twitter_id, twitter_username, bsky_identifier, bsky_uri, bsky_cid, bsky_root_uri, bsky_root_cid, status, created_at)
+        SELECT twitter_id, twitter_username, 'unknown', bsky_uri, bsky_cid, bsky_root_uri, bsky_root_cid, status, created_at
+        FROM processed_tweets_old;
+        DROP TABLE processed_tweets_old;
+      `);
+    })();
+    console.log('✅ Database upgraded successfully.');
+  }
+} else {
+  // Initialize fresh schema
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS processed_tweets (
+      twitter_id TEXT NOT NULL,
+      twitter_username TEXT NOT NULL,
+      bsky_identifier TEXT NOT NULL,
+      bsky_uri TEXT,
+      bsky_cid TEXT,
+      bsky_root_uri TEXT,
+      bsky_root_cid TEXT,
+      status TEXT NOT NULL, -- 'migrated', 'skipped', 'failed'
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (twitter_id, bsky_identifier)
+    );
+  `);
+}
+
 db.exec(`
-  CREATE TABLE IF NOT EXISTS processed_tweets (
-    twitter_id TEXT NOT NULL,
-    twitter_username TEXT NOT NULL,
-    bsky_identifier TEXT NOT NULL,
-    bsky_uri TEXT,
-    bsky_cid TEXT,
-    bsky_root_uri TEXT,
-    bsky_root_cid TEXT,
-    status TEXT NOT NULL, -- 'migrated', 'skipped', 'failed'
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (twitter_id, bsky_identifier)
-  );
   CREATE INDEX IF NOT EXISTS idx_twitter_username ON processed_tweets(twitter_username);
   CREATE INDEX IF NOT EXISTS idx_bsky_identifier ON processed_tweets(bsky_identifier);
 `);
