@@ -442,19 +442,20 @@ async function processTweets(
           const videoUrl = mp4s[0].url;
           try {
             const { buffer, mimeType } = await downloadMedia(videoUrl);
-            if (buffer.length > 50 * 1024 * 1024) { // Reduced limit to be safer
-              throw new Error('Video too large');
+            if (buffer.length > 95 * 1024 * 1024) {
+              console.warn('Video too large (>95MB). Linking to tweet.');
+              const tweetUrl = `https://twitter.com/${twitterUsername}/status/${tweetId}`;
+              if (!text.includes(tweetUrl)) text += `\n${tweetUrl}`;
+              continue;
             }
             const blob = await uploadToBluesky(agent, buffer, mimeType);
             videoBlob = blob;
             videoAspectRatio = aspectRatio;
+            break; // Prioritize video and stop looking for other media
           } catch (err) {
             console.warn(`Failed to upload video ${videoUrl}, linking to tweet instead:`, (err as Error).message);
-            // Link to the actual tweet so it unfurls with the video correctly
             const tweetUrl = `https://twitter.com/${twitterUsername}/status/${tweetId}`;
-            if (!text.includes(tweetUrl)) {
-              text += `\n${tweetUrl}`;
-            }
+            if (!text.includes(tweetUrl)) text += `\n${tweetUrl}`;
           }
         }
       }
