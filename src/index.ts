@@ -465,12 +465,26 @@ async function processTweets(
     text = text.replace(/\n\s*\n/g, '\n\n').trim();
 
     let quoteEmbed: { $type: string; record: { uri: string; cid: string } } | null = null;
+    let externalQuoteUrl: string | null = null;
+
     if (tweet.is_quote_status && tweet.quoted_status_id_str) {
       const quoteId = tweet.quoted_status_id_str;
       const quoteRef = processedTweets[quoteId];
       if (quoteRef && !quoteRef.migrated && quoteRef.uri && quoteRef.cid) {
         quoteEmbed = { $type: 'app.bsky.embed.record', record: { uri: quoteRef.uri, cid: quoteRef.cid } };
+      } else {
+        // External quote - find the URL in entities or fallback
+        const quoteUrlEntity = urls.find((u) => u.expanded_url?.includes(quoteId));
+        if (quoteUrlEntity?.expanded_url) {
+          externalQuoteUrl = quoteUrlEntity.expanded_url;
+        } else {
+          externalQuoteUrl = `https://twitter.com/i/status/${quoteId}`;
+        }
       }
+    }
+
+    if (externalQuoteUrl && !text.includes(externalQuoteUrl)) {
+      text += `\n\nQT: ${externalQuoteUrl}`;
     }
 
     const chunks = splitText(text);
