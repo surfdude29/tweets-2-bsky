@@ -12,7 +12,8 @@ Most crossposters are either paid services or lack key features. This tool is de
     *   **Links:** Automatically removes `t.co` tracking links and expands them to their real destinations.
 *   **Smart Features:**
     *   **Language Detection:** Automatically detects the language of your tweet (e.g., English, Japanese) and tags the Bluesky post correctly.
-    *   **Human-like Pacing:** Adds a small delay between posts to prevent spam detection and rate limits.
+    *   **Human-like Pacing:** Randomly waits (1-4s) between posts to behave more like a real user and avoid spam detection.
+    *   **Auto-Healing:** Automatically rotates internal Twitter Query IDs if they expire, ensuring the tool keeps working 24/7 without manual intervention.
 *   **Threads & Replies:**
     *   **Perfect Threading:** If you write a thread (reply to yourself) on Twitter, it appears as a threaded conversation on Bluesky.
     *   **Clean Feed:** Automatically filters out your replies to *other* people, keeping your Bluesky timeline focused on your original content.

@@ -7,6 +7,7 @@ const cron = require('node-cron');
 const { TwitterClient } = require('@steipete/bird/dist/lib/twitter-client');
 const franc = require('franc-min');
 const iso6391 = require('iso-639-1');
+const { exec } = require('child_process');
 
 // Configuration
 const TWITTER_AUTH_TOKEN = process.env.TWITTER_AUTH_TOKEN;
@@ -147,9 +148,51 @@ async function getUsername() {
     return "me";
 }
 
+function getRandomDelay(min = 1000, max = 4000) {
+    return Math.floor(Math.random() * (max - min + 1) + min);
+}
+
+function refreshQueryIds() {
+    return new Promise((resolve) => {
+        console.log("⚠️  Attempting to refresh Twitter Query IDs via 'bird' CLI...");
+        exec('./node_modules/.bin/bird query-ids --fresh', (error, stdout, stderr) => {
+            if (error) {
+                console.error(`Error refreshing IDs: ${error.message}`);
+                console.error(`Stderr: ${stderr}`);
+            } else {
+                console.log("✅ Query IDs refreshed successfully.");
+            }
+            resolve();
+        });
+    });
+}
+
+/**
+ * Wraps twitter.search with auto-recovery for stale Query IDs
+ */
+async function safeSearch(query, limit) {
+    try {
+        const result = await twitter.search(query, limit);
+        // Sometimes it returns success: false but no throw
+        if (!result.success && result.error && 
+            (result.error.toString().includes('GraphQL') || result.error.toString().includes('404'))) {
+            throw new Error(result.error);
+        }
+        return result;
+    } catch (err) {
+        console.warn(`Search encountered an error: ${err.message || err}`);
+        if (err.message && (err.message.includes('GraphQL') || err.message.includes('404') || err.message.includes('Bad Guest Token'))) {
+            await refreshQueryIds();
+            console.log("Retrying search...");
+            return await twitter.search(query, limit);
+        }
+        return { success: false, error: err };
+    }
+}
+
 // --- Main Processing Logic ---
 
-async function processTweets(tweets, delayBetweenPosts = 1000) {
+async function processTweets(tweets) {
     // Ensure chronological order
     tweets.reverse();
 
@@ -162,7 +205,6 @@ async function processTweets(tweets, delayBetweenPosts = 1000) {
         // --- Filter Replies (unless we are maintaining a thread) ---
         // If it's a reply, but the parent IS in our DB, we want to post it as a reply.
         // If it's a reply to someone else (or a thread we missed), we skip it based on user preference (only original tweets).
-        // User asked: "if i do it on twitter... it should continue out a thread".
         
         const replyStatusId = tweet.in_reply_to_status_id_str || tweet.in_reply_to_status_id;
         const replyUserId = tweet.in_reply_to_user_id_str || tweet.in_reply_to_user_id;
@@ -223,7 +265,6 @@ async function processTweets(tweets, delayBetweenPosts = 1000) {
             }
 
             // Aspect Ratio Extraction
-            // Twitter gives sizes: { large: { w, h, resize }, ... }
             let aspectRatio = undefined;
             if (media.sizes?.large) {
                 aspectRatio = { width: media.sizes.large.w, height: media.sizes.large.h };
@@ -233,7 +274,6 @@ async function processTweets(tweets, delayBetweenPosts = 1000) {
 
             if (media.type === 'photo') {
                 const url = media.media_url_https;
-                // console.log(`Downloading image: ${url}`);
                 try {
                     const { buffer, mimeType } = await downloadMedia(url);
                     const blob = await uploadToBluesky(buffer, mimeType);
@@ -251,7 +291,6 @@ async function processTweets(tweets, delayBetweenPosts = 1000) {
                 
                 if (mp4s.length > 0) {
                     const videoUrl = mp4s[0].url;
-                    // console.log(`Downloading video: ${videoUrl}`);
                     try {
                         const { buffer, mimeType } = await downloadMedia(videoUrl);
                         
@@ -284,7 +323,6 @@ async function processTweets(tweets, delayBetweenPosts = 1000) {
         if (tweet.is_quote_status && tweet.quoted_status_id_str) {
             const quoteId = tweet.quoted_status_id_str;
             if (processedTweets[quoteId] && !processedTweets[quoteId].migrated) {
-                // We have the quoted tweet in our history!
                 const ref = processedTweets[quoteId];
                 quoteEmbed = {
                     $type: 'app.bsky.embed.record',
@@ -293,10 +331,6 @@ async function processTweets(tweets, delayBetweenPosts = 1000) {
                         cid: ref.cid
                     }
                 };
-                // Remove the quote URL from text if present (usually at the end)
-                // Twitter API usually includes the quote URL in entities.urls, so it might be expanded already.
-                // We should find the url that points to the tweet and remove it.
-                // A simple heuristic: remove the last url if it looks like a twitter link to the quote.
             }
         }
 
@@ -312,13 +346,8 @@ async function processTweets(tweets, delayBetweenPosts = 1000) {
             createdAt: tweet.created_at ? new Date(tweet.created_at).toISOString() : new Date().toISOString()
         };
 
-        // Attach Embeds (Complex Logic for handling Media + Quote)
+        // Attach Embeds
         if (videoBlob) {
-            // Video + Quote is not natively supported in one simple embed field yet in standard way without recordWithMedia?
-            // Actually recordWithMedia supports Images + Record. Does it support Video + Record?
-            // Currently app.bsky.embed.video is standalone. 
-            // If we have video AND quote, we might have to drop the quote embed or just link it.
-            // For now: Prioritize Video.
             postRecord.embed = {
                 $type: 'app.bsky.embed.video',
                 video: videoBlob,
@@ -331,7 +360,6 @@ async function processTweets(tweets, delayBetweenPosts = 1000) {
             };
 
             if (quoteEmbed) {
-                // Media + Quote -> app.bsky.embed.recordWithMedia
                 postRecord.embed = {
                     $type: 'app.bsky.embed.recordWithMedia',
                     media: imagesEmbed,
@@ -357,7 +385,6 @@ async function processTweets(tweets, delayBetweenPosts = 1000) {
             const response = await agent.post(postRecord);
             // console.log(`Posted: ${tweetId}`);
             
-            // Save with Threading Info
             const newEntry = {
                 uri: response.uri,
                 cid: response.cid,
@@ -367,13 +394,10 @@ async function processTweets(tweets, delayBetweenPosts = 1000) {
             processedTweets[tweetId] = newEntry;
             saveProcessedTweets();
 
-            // Pacing
-            if (delayBetweenPosts > 0) {
-                // Min delay + random jitter (0-500ms)
-                const sleepTime = delayBetweenPosts + Math.floor(Math.random() * 500); 
-                // console.log(`Sleeping ${sleepTime}ms...`);
-                await new Promise(r => setTimeout(r, sleepTime));
-            }
+            // Random Pacing (1s - 4s)
+            const sleepTime = getRandomDelay(1000, 4000);
+            // console.log(`Sleeping ${sleepTime}ms...`);
+            await new Promise(r => setTimeout(r, sleepTime));
 
         } catch (err) {
             console.error(`Failed to post ${tweetId}:`, err);
@@ -387,20 +411,9 @@ async function checkAndPost() {
     try {
         const username = await getUsername();
         
-        // We still filter replies at source to save API calls, 
-        // but our processTweets logic now handles "threading" if we accidentally fetch a reply 
-        // (or if we remove the filter later).
-        // Current requirement: "filter replies" but "continue thread".
-        // If we filter replies in search, we WON'T see our own replies to thread them.
-        // So we MUST remove -filter:replies from the search if we want to support threading.
-        // BUT user said "it's also posting all my replies which i don't want... it should only crosspost original Tweets".
-        // AND "if i do it on twitter... it should continue out a thread".
-        
-        // Solution: Fetch EVERYTHING (no -filter:replies), but in `processTweets`,
-        // ONLY post if it is NOT a reply OR if it is a reply to a KNOWN parent in `processedTweets`.
-        
-        const query = `from:${username}`; // Removed -filter:replies to allow threading checks
-        const result = await twitter.search(query, 30); // Fetch a few more to be safe
+        // Use safeSearch with auto-refresh for IDs
+        const query = `from:${username}`;
+        const result = await safeSearch(query, 30);
         
         if (!result.success) {
             console.error("Failed to fetch tweets:", result.error);
@@ -410,7 +423,7 @@ async function checkAndPost() {
         const tweets = result.tweets || [];
         if (tweets.length === 0) return;
 
-        await processTweets(tweets, 1000); // 1s delay for live checks
+        await processTweets(tweets);
 
     } catch (err) {
         console.error("Error in checkAndPost:", err);
@@ -429,15 +442,14 @@ async function importHistory() {
     const seenIds = new Set();
 
     while (keepGoing) {
-        // We fetch everything (including replies) so we can thread them if valid
-        let query = `from:${username}`; 
+        let query = `from:${username}`;
         if (maxId) {
             query += ` max_id:${maxId}`;
         }
         
         console.log(`Fetching batch... (Collected: ${allFoundTweets.length})`);
         
-        const result = await twitter.search(query, count);
+        const result = await safeSearch(query, count);
         
         if (!result.success) {
             console.error("Fetch failed:", result.error);
@@ -472,9 +484,8 @@ async function importHistory() {
     console.log(`Fetch complete. Found ${allFoundTweets.length} new tweets to import.`);
     
     if (allFoundTweets.length > 0) {
-        console.log("Starting processing (Oldest -> Newest) with pacing...");
-        // 1 seconds delay average for human-like backfill
-        await processTweets(allFoundTweets, 1000); 
+        console.log("Starting processing (Oldest -> Newest) with random pacing...");
+        await processTweets(allFoundTweets); 
         console.log("History import complete.");
     } else {
         console.log("Nothing new to import.");
@@ -500,6 +511,9 @@ async function importHistory() {
         await importHistory();
         process.exit(0);
     }
+
+    // Refresh IDs on startup just to be safe/fresh
+    // await refreshQueryIds(); 
 
     await checkAndPost();
 

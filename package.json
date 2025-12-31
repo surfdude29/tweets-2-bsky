@@ -1,6 +1,6 @@
 {
   "name": "tweets-2-bsky",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "A powerful tool to crosspost Tweets to Bluesky, supporting threads, videos, and high-quality images.",
   "main": "index.js",
   "scripts": {
