@@ -439,8 +439,23 @@ async function processTweets(
           .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
 
         if (mp4s.length > 0 && mp4s[0]) {
-          // Reverting to links for video for now as native upload is failing
-          text += `\n${media.media_url_https}`;
+          const videoUrl = mp4s[0].url;
+          try {
+            const { buffer, mimeType } = await downloadMedia(videoUrl);
+            if (buffer.length > 50 * 1024 * 1024) { // Reduced limit to be safer
+              throw new Error('Video too large');
+            }
+            const blob = await uploadToBluesky(agent, buffer, mimeType);
+            videoBlob = blob;
+            videoAspectRatio = aspectRatio;
+          } catch (err) {
+            console.warn(`Failed to upload video ${videoUrl}, linking to tweet instead:`, (err as Error).message);
+            // Link to the actual tweet so it unfurls with the video correctly
+            const tweetUrl = `https://twitter.com/${twitterUsername}/status/${tweetId}`;
+            if (!text.includes(tweetUrl)) {
+              text += `\n${tweetUrl}`;
+            }
+          }
         }
       }
     }
@@ -476,7 +491,13 @@ async function processTweets(
 
       // Only attach media/quotes to the first chunk
       if (i === 0) {
-        if (images.length > 0) {
+        if (videoBlob) {
+          postRecord.embed = {
+            $type: 'app.bsky.embed.video',
+            video: videoBlob,
+            aspectRatio: videoAspectRatio,
+          };
+        } else if (images.length > 0) {
           const imagesEmbed = { $type: 'app.bsky.embed.images', images };
           if (quoteEmbed) {
             postRecord.embed = { $type: 'app.bsky.embed.recordWithMedia', media: imagesEmbed, record: quoteEmbed };
