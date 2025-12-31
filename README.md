@@ -2,92 +2,83 @@
 
 > **Note**: This project is built on top of [**bird**](https://github.com/steipete/bird) by [@steipete](https://github.com/steipete), which provides the core Twitter interaction capabilities.
 
-A powerful tool to crosspost your Tweets to Bluesky automatically. Now supports **multiple accounts**, **custom PDS (hosting) locations**, and a **user-friendly CLI** for easy management.
+A powerful tool to crosspost your Tweets to Bluesky automatically. Now features a **Web Dashboard** for easy management, **Multi-account support** for different owners, and **Custom PDS** hosting support.
 
 ## ✨ Features
 
-- **Multi-Account Support**: Sync Twitter A -> Bluesky A, Twitter B -> Bluesky B, or multiple Twitters to one Bluesky.
-- **Interactive CLI**: Manage all your account mappings and credentials without touching code.
-- **Custom PDS Support**: Works with `bsky.social` or any independent Bluesky hosting provider.
-- **Thread Support**: Maintains your Twitter threads perfectly on Bluesky.
-- **Media Support**: Automatically migrates high-quality images and videos.
-- **Smart Logic**: Automatically detects languages and expands short links.
-- **Safety First**: Includes a `--dry-run` mode to test before you post.
+- **Web Dashboard**: Modern interface to manage all your sync tasks.
+- **Multi-User Mapping**: Let others add their accounts (e.g., Dan, Josh) with their own owners.
+- **Multi-Account Support**: Sync Twitter A -> Bluesky A, Twitter B -> Bluesky B, etc.
+- **Tailscale Ready**: Accessible over your local network or VPN.
+- **Interactive CLI**: Manage everything from the terminal with `./crosspost`.
+- **High Quality**: Supports threads, high-quality images, and videos.
 
 ---
 
-## 🚀 Quick Start (For Everyone)
+## 🚀 Quick Start
 
 ### 1. Prerequisites
-- **Node.js** installed on your computer.
-- A Twitter account (preferably an alt/burner for the web cookies).
-- A Bluesky account and an **App Password** (Settings -> Privacy & Security -> App Passwords).
+- **Node.js** installed.
+- A Twitter account (burner recommended) for global cookies.
+- Bluesky account(s) with **App Passwords**.
 
 ### 2. Installation
-Open your terminal and run:
 ```bash
 git clone https://github.com/j4ckxyz/tweets-2-bsky.git
 cd tweets-2-bsky
 npm install
-```
-
-### 3. Setup (Using the CLI)
-Instead of editing files, use our simple setup command:
-```bash
-# 1. Set your Twitter cookies (one set of cookies works for all mappings)
-./crosspost setup-twitter
-
-# 2. Add your first account mapping
-./crosspost add-mapping
-```
-*Note: You can find your Twitter `auth_token` and `ct0` in your browser's developer tools under Application -> Cookies.*
-
-### 4. Run the Sync
-```bash
-# Build the project
 npm run build
+```
 
-# Start the automatic syncing daemon
+### 3. Start Syncing & Web UI
+```bash
+# This starts both the sync daemon AND the web dashboard
 npm start
 ```
+By default, the web interface runs at **http://localhost:3000**. If you are using Tailscale, it's accessible at `http://your-tailscale-ip:3000`.
+
+### 4. Setup (Web Dashboard)
+1. Open the dashboard in your browser.
+2. **Register** a new account (email/password).
+3. Log in and go to **Global Twitter Config** to enter your cookies.
+4. Use **Add New Mapping** to connect a Twitter handle to a Bluesky account.
 
 ---
 
 ## 🛠 Advanced Usage
 
+### Disable Web Interface
+If you only want to run the sync daemon without the web UI:
+```bash
+npm start -- --no-web
+```
+
+### Command Line Interface (CLI)
+You can still manage everything via the terminal:
+```bash
+# Set Twitter cookies
+./crosspost setup-twitter
+
+# Add a mapping
+./crosspost add-mapping
+
+# List/Remove
+./crosspost list
+./crosspost remove
+```
+
 ### Backfilling Old Tweets
-If you want to import your historical tweets for a specific account:
 ```bash
-# Get the command from the CLI help
-./crosspost import-history
-
-# Example: Import the last 10 tweets for a specific user
-npm run import -- --username YOUR_TWITTER_HANDLE --limit 10
-```
-
-### Testing with Dry Run
-See what would be posted without actually posting anything:
-```bash
-npm start -- --dry-run
-```
-
-### Management Commands
-```bash
-./crosspost list             # Show all active mappings
-./crosspost remove           # Remove an account mapping
-./crosspost set-interval     # Change how often to check for new tweets
+# Example: Import the last 20 tweets for a user
+npm run import -- --username YOUR_TWITTER_HANDLE --limit 20
 ```
 
 ---
 
-## 📝 Configuration Details
-
-- **Check Interval**: Default is 5 minutes.
-- **Database**: Processed tweets are tracked per-account in the `processed/` folder so you never get duplicates.
-- **Service URL**: If you use a custom Bluesky host (like `bsky.network`), you can set it during the `add-mapping` process.
+## ⚙️ How to get Twitter Cookies
+1. Log in to Twitter in your browser.
+2. Open **Developer Tools** (F12) -> **Application** tab -> **Cookies**.
+3. Copy `auth_token` and `ct0` values.
 
 ## ⚖️ License
 MIT
-
----
-*Created with ❤️ for the decentralized web.*

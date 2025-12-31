@@ -17,9 +17,9 @@ import { getConfig } from './config-manager.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// ============================================================================ 
+// ============================================================================
 // Type Definitions
-// ============================================================================ 
+// ============================================================================
 
 interface ProcessedTweetEntry {
   uri?: string;
@@ -111,9 +111,9 @@ interface ImageEmbed {
   aspectRatio?: AspectRatio;
 }
 
-// ============================================================================ 
+// ============================================================================
 // State Management
-// ============================================================================ 
+// ============================================================================
 
 const PROCESSED_DIR = path.join(__dirname, '..', 'processed');
 if (!fs.existsSync(PROCESSED_DIR)) {
@@ -145,9 +145,9 @@ function saveProcessedTweets(twitterUsername: string, data: ProcessedTweetsMap):
   }
 }
 
-// ============================================================================ 
+// ============================================================================
 // Custom Twitter Client
-// ============================================================================ 
+// ============================================================================
 
 interface TwitterLegacyResult {
   legacy?: {
@@ -178,9 +178,9 @@ class CustomTwitterClient extends TwitterClient {
 
 let twitter: CustomTwitterClient;
 
-// ============================================================================ 
+// ============================================================================
 // Helper Functions
-// ============================================================================ 
+// ============================================================================
 
 function detectLanguage(text: string): string[] {
   if (!text || text.trim().length === 0) return ['en'];
@@ -283,9 +283,9 @@ async function safeSearch(query: string, limit: number): Promise<TwitterSearchRe
   }
 }
 
-// ============================================================================ 
+// ============================================================================
 // Main Processing Logic
-// ============================================================================ 
+// ============================================================================
 
 async function processTweets(
   agent: BskyAgent,
@@ -556,12 +556,17 @@ async function importHistory(twitterUsername: string, limit?: number, dryRun = f
   }
 }
 
+import { startServer } from './server.js';
+
+// ... (previous imports)
+
 async function main(): Promise<void> {
   const program = new Command();
   program
     .name('tweets-2-bsky')
     .description('Crosspost tweets to Bluesky')
     .option('--dry-run', 'Fetch tweets but do not post to Bluesky', false)
+    .option('--no-web', 'Disable the web interface')
     .option('--import-history', 'Run in history import mode')
     .option('--username <username>', 'Twitter username for history import')
     .option('--limit <number>', 'Limit the number of tweets to import', (val) => Number.parseInt(val, 10))
@@ -570,17 +575,29 @@ async function main(): Promise<void> {
   const options = program.opts();
 
   const config = getConfig();
-  if (!config.twitter.authToken || !config.twitter.ct0) {
-    console.error('Twitter credentials not set. Use "npm run cli setup-twitter".');
-    process.exit(1);
+
+  if (!options.web) {
+    console.log('🌐 Web interface is disabled.');
+  } else {
+    startServer();
+    if (config.users.length === 0) {
+      console.log('ℹ️  No users found. Please register on the web interface to get started.');
+    }
   }
 
-  twitter = new CustomTwitterClient({
-    cookies: {
-      authToken: config.twitter.authToken,
-      ct0: config.twitter.ct0,
-    },
-  });
+  // Allow starting even if twitter credentials are not set (can be set via web UI now)
+  const twitterConfigured = config.twitter.authToken && config.twitter.ct0;
+
+  if (twitterConfigured) {
+    twitter = new CustomTwitterClient({
+      cookies: {
+        authToken: config.twitter.authToken,
+        ct0: config.twitter.ct0,
+      },
+    });
+  } else {
+    console.warn('⚠️  Twitter credentials not set. Use the web UI or CLI to configure them.');
+  }
 
   if (options.importHistory) {
     if (!options.username) {
@@ -591,7 +608,9 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  await checkAndPost(options.dryRun);
+  if (twitter) {
+    await checkAndPost(options.dryRun);
+  }
 
   if (options.dryRun) {
     console.log('Dry run complete. Exiting.');
@@ -600,7 +619,21 @@ async function main(): Promise<void> {
 
   console.log(`Scheduling check every ${config.checkIntervalMinutes} minutes.`);
   cron.schedule(`*/${config.checkIntervalMinutes} * * * *`, () => {
-    checkAndPost(options.dryRun);
+    if (twitter) {
+      checkAndPost(options.dryRun);
+    } else {
+      // Try to re-initialize if config was updated via web
+      const currentConfig = getConfig();
+      if (currentConfig.twitter.authToken && currentConfig.twitter.ct0) {
+        twitter = new CustomTwitterClient({
+          cookies: {
+            authToken: currentConfig.twitter.authToken,
+            ct0: currentConfig.twitter.ct0,
+          },
+        });
+        checkAndPost(options.dryRun);
+      }
+    }
   });
 }
 

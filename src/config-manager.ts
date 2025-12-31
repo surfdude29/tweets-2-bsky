@@ -12,6 +12,11 @@ export interface TwitterConfig {
   ct0: string;
 }
 
+export interface WebUser {
+  email: string;
+  passwordHash: string;
+}
+
 export interface AccountMapping {
   id: string;
   twitterUsername: string;
@@ -19,11 +24,13 @@ export interface AccountMapping {
   bskyPassword: string;
   bskyServiceUrl?: string;
   enabled: boolean;
+  owner?: string;
 }
 
 export interface AppConfig {
   twitter: TwitterConfig;
   mappings: AccountMapping[];
+  users: WebUser[];
   checkIntervalMinutes: number;
 }
 
@@ -32,21 +39,24 @@ export function getConfig(): AppConfig {
     return {
       twitter: { authToken: '', ct0: '' },
       mappings: [],
+      users: [],
       checkIntervalMinutes: 5,
     };
   }
   try {
-    return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+    const config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+    if (!config.users) config.users = [];
+    return config;
   } catch (err) {
     console.error('Error reading config:', err);
     return {
       twitter: { authToken: '', ct0: '' },
       mappings: [],
+      users: [],
       checkIntervalMinutes: 5,
     };
   }
 }
-
 export function saveConfig(config: AppConfig): void {
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
 }
