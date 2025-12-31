@@ -233,6 +233,26 @@
                 }
             };
 
+            const resetAndBackfill = async (id, twitterUsername) => {
+                const limit = prompt(`Reset cache and backfill how many tweets for @${twitterUsername}?`, "100");
+                if (limit === null) return;
+
+                try {
+                    // 1. Clear Cache
+                    await axios.delete(`/api/mappings/${id}/cache`, { 
+                        headers: { Authorization: `Bearer ${token}` } 
+                    });
+                    // 2. Queue Backfill
+                    await axios.post(`/api/backfill/${id}`, { limit: parseInt(limit) || 100 }, { 
+                        headers: { Authorization: `Bearer ${token}` } 
+                    });
+                    alert(`Cache cleared and backfill queued for @${twitterUsername}`);
+                    setTimeout(fetchStatus, 1000);
+                } catch (err) {
+                    alert('Reset & Backfill failed');
+                }
+            };
+
             const updateTwitter = async (e) => {
                 e.preventDefault();
                 const formData = new FormData(e.target);
@@ -387,15 +407,18 @@
                                                         <td className="text-end">
                                                             {isAdmin && (
                                                             <>
-                                                                <button onClick={() => runBackfill(m.id, m.twitterUsername)} className="btn btn-link btn-sm text-warning p-0 me-2" title="Backfill">
+                                                                <button onClick={() => runBackfill(m.id, m.twitterUsername)} className="btn btn-link btn-sm text-warning p-0 me-2" title="Backfill (Keep Cache)">
                                                                     <span className="material-icons">history</span>
                                                                 </button>
-                                                                <button onClick={() => clearCache(m.id, m.twitterUsername)} className="btn btn-link btn-sm text-secondary p-0 me-2" title="Clear Cache">
+                                                                <button onClick={() => resetAndBackfill(m.id, m.twitterUsername)} className="btn btn-link btn-sm text-danger p-0 me-2" title="Reset & Backfill (Clears Cache)">
+                                                                    <span className="material-icons">restart_alt</span>
+                                                                </button>
+                                                                <button onClick={() => clearCache(m.id, m.twitterUsername)} className="btn btn-link btn-sm text-secondary p-0 me-2" title="Clear Cache Only">
                                                                     <span className="material-icons">delete_sweep</span>
                                                                 </button>
                                                             </>
                                                             )}
-                                                            <button onClick={() => deleteMapping(m.id)} className="btn btn-link btn-sm text-danger p-0" title="Delete">
+                                                            <button onClick={() => deleteMapping(m.id)} className="btn btn-link btn-sm text-danger p-0" title="Delete Account">
                                                                 <span className="material-icons">delete</span>
                                                             </button>
                                                         </td>
