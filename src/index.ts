@@ -582,9 +582,11 @@ async function checkAndPost(dryRun = false, forceBackfill = false): Promise<void
       const agent = await getAgent(mapping);
       if (!agent) continue;
 
-      if (forceBackfill || pendingBackfills.includes(mapping.id)) {
-        console.log(`[${mapping.twitterUsername}] Running backfill (limit 100)...`);
-        await importHistory(mapping.twitterUsername, 100, dryRun);
+      const backfillReq = pendingBackfills.find(b => b.id === mapping.id);
+      if (forceBackfill || backfillReq) {
+        const limit = backfillReq?.limit || 100;
+        console.log(`[${mapping.twitterUsername}] Running backfill (limit ${limit})...`);
+        await importHistory(mapping.twitterUsername, limit, dryRun);
         clearBackfill(mapping.id);
         console.log(`[${mapping.twitterUsername}] Backfill complete.`);
       } else {

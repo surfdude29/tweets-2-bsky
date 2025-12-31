@@ -17,7 +17,11 @@ const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret';
 // In-memory state for triggers and scheduling
 let lastCheckTime = Date.now();
 let nextCheckTime = Date.now() + (getConfig().checkIntervalMinutes || 5) * 60 * 1000;
-let pendingBackfills: string[] = [];
+interface PendingBackfill {
+  id: string;
+  limit?: number;
+}
+let pendingBackfills: PendingBackfill[] = [];
 
 app.use(cors());
 app.use(express.json());
@@ -176,6 +180,7 @@ app.post('/api/run-now', authenticateToken, (_req, res) => {
 
 app.post('/api/backfill/:id', authenticateToken, requireAdmin, (req, res) => {
   const { id } = req.params;
+  const { limit } = req.body;
   const config = getConfig();
   const mapping = config.mappings.find((m) => m.id === id);
 
@@ -184,8 +189,8 @@ app.post('/api/backfill/:id', authenticateToken, requireAdmin, (req, res) => {
     return;
   }
 
-  if (!pendingBackfills.includes(id)) {
-    pendingBackfills.push(id);
+  if (!pendingBackfills.find(b => b.id === id)) {
+    pendingBackfills.push({ id, limit: limit ? Number(limit) : undefined });
   }
 
   lastCheckTime = 0;
@@ -195,7 +200,7 @@ app.post('/api/backfill/:id', authenticateToken, requireAdmin, (req, res) => {
 
 app.delete('/api/backfill/:id', authenticateToken, (req, res) => {
   const { id } = req.params;
-  pendingBackfills = pendingBackfills.filter((bid) => bid !== id);
+  pendingBackfills = pendingBackfills.filter((bid) => bid.id !== id);
   res.json({ success: true });
 });
 
@@ -206,7 +211,7 @@ export function updateLastCheckTime() {
   nextCheckTime = lastCheckTime + (config.checkIntervalMinutes || 5) * 60 * 1000;
 }
 
-export function getPendingBackfills(): string[] {
+export function getPendingBackfills(): PendingBackfill[] {
   return [...pendingBackfills];
 }
 
@@ -215,7 +220,7 @@ export function getNextCheckTime(): number {
 }
 
 export function clearBackfill(id: string) {
-  pendingBackfills = pendingBackfills.filter((bid) => bid !== id);
+  pendingBackfills = pendingBackfills.filter((bid) => bid.id !== id);
 }
 
 // Serve the frontend for any other route (middleware approach for Express 5)

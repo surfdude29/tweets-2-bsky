@@ -207,9 +207,11 @@
             };
 
             const runBackfill = async (id, twitterUsername) => {
-                if (!confirm(`Run full history backfill for @${twitterUsername}? This may take a while.`)) return;
+                const limit = prompt(`How many tweets to backfill for @${twitterUsername}?`, "100");
+                if (limit === null) return; // Cancelled
+                
                 try {
-                    await axios.post(`/api/backfill/${id}`, {}, { 
+                    await axios.post(`/api/backfill/${id}`, { limit: parseInt(limit) || 100 }, { 
                         headers: { Authorization: `Bearer ${token}` } 
                     });
                     alert(`Backfill queued for @${twitterUsername}`);
@@ -280,7 +282,7 @@
                 );
             }
 
-            const isBackfillQueued = (id) => status.pendingBackfills?.includes(id);
+            const isBackfillQueued = (id) => status.pendingBackfills?.some(b => (b.id || b) === id);
 
             return (
                 <div>
