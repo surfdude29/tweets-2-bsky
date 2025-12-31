@@ -10,7 +10,6 @@ import axios from 'axios';
 import { Command } from 'commander';
 import * as francModule from 'franc-min';
 import iso6391 from 'iso-639-1';
-import cron from 'node-cron';
 import { getConfig } from './config-manager.js';
 
 // ESM __dirname equivalent
@@ -177,6 +176,29 @@ class CustomTwitterClient extends TwitterClient {
 }
 
 let twitter: CustomTwitterClient;
+let currentTwitterCookies = { authToken: '', ct0: '' };
+
+function getTwitterClient() {
+  const config = getConfig();
+  if (!config.twitter.authToken || !config.twitter.ct0) return null;
+  
+  // Re-initialize if config changed or not yet initialized
+  if (!twitter || 
+      currentTwitterCookies.authToken !== config.twitter.authToken || 
+      currentTwitterCookies.ct0 !== config.twitter.ct0) {
+    twitter = new CustomTwitterClient({
+      cookies: {
+        authToken: config.twitter.authToken,
+        ct0: config.twitter.ct0,
+      },
+    });
+    currentTwitterCookies = { 
+      authToken: config.twitter.authToken, 
+      ct0: config.twitter.ct0 
+    };
+  }
+  return twitter;
+}
 
 // ============================================================================
 // Helper Functions
@@ -259,8 +281,11 @@ function refreshQueryIds(): Promise<void> {
 }
 
 async function safeSearch(query: string, limit: number): Promise<TwitterSearchResult> {
+  const client = getTwitterClient();
+  if (!client) return { success: false, error: 'Twitter client not configured' };
+
   try {
-    const result = (await twitter.search(query, limit)) as TwitterSearchResult;
+    const result = (await client.search(query, limit)) as TwitterSearchResult;
     if (!result.success && result.error) {
       const errorStr = result.error.toString();
       if (errorStr.includes('GraphQL') || errorStr.includes('404')) {
@@ -277,7 +302,7 @@ async function safeSearch(query: string, limit: number): Promise<TwitterSearchRe
     ) {
       await refreshQueryIds();
       console.log('Retrying search...');
-      return (await twitter.search(query, limit)) as TwitterSearchResult;
+      return (await client.search(query, limit)) as TwitterSearchResult;
     }
     return { success: false, error };
   }
@@ -568,9 +593,7 @@ async function importHistory(twitterUsername: string, limit?: number, dryRun = f
   }
 }
 
-import { startServer, updateLastCheckTime, getPendingBackfills, clearBackfill } from './server.js';
-
-// ... (previous imports)
+import { startServer, updateLastCheckTime, getPendingBackfills, clearBackfill, getNextCheckTime } from './server.js';
 
 async function main(): Promise<void> {
   const program = new Command();
@@ -597,31 +620,18 @@ async function main(): Promise<void> {
     }
   }
 
-  // Allow starting even if twitter credentials are not set (can be set via web UI now)
-  const twitterConfigured = config.twitter.authToken && config.twitter.ct0;
-
-  if (twitterConfigured) {
-    twitter = new CustomTwitterClient({
-      cookies: {
-        authToken: config.twitter.authToken,
-        ct0: config.twitter.ct0,
-      },
-    });
-  } else {
-    console.warn('⚠️  Twitter credentials not set. Use the web UI or CLI to configure them.');
-  }
-
   if (options.importHistory) {
     if (!options.username) {
       console.error('Please specify a username with --username <username>');
       process.exit(1);
     }
+    const client = getTwitterClient();
+    if (!client) {
+      console.error('Twitter credentials not set. Cannot import history.');
+      process.exit(1);
+    }
     await importHistory(options.username, options.limit, options.dryRun);
     process.exit(0);
-  }
-
-  if (twitter) {
-    await checkAndPost(options.dryRun);
   }
 
   if (options.dryRun) {
@@ -629,23 +639,30 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  console.log(`Scheduling check every ${config.checkIntervalMinutes} minutes.`);
-  cron.schedule(`*/${config.checkIntervalMinutes} * * * *`, () => {
-    const pendingBackfills = getPendingBackfills();
-    const forceBackfill = pendingBackfills.length > 0;
-    if (twitter || forceBackfill) {
-      const currentConfig = getConfig();
-      if (!twitter && currentConfig.twitter.authToken && currentConfig.twitter.ct0) {
-        twitter = new CustomTwitterClient({
-          cookies: {
-            authToken: currentConfig.twitter.authToken,
-            ct0: currentConfig.twitter.ct0,
-          },
-        });
+  console.log(`Scheduler started. Base interval: ${config.checkIntervalMinutes} minutes.`);
+  
+  // Main loop to handle both scheduled runs and immediate triggers
+  while (true) {
+    const now = Date.now();
+    const nextTime = getNextCheckTime();
+    
+    if (now >= nextTime) {
+      const client = getTwitterClient();
+      const pendingBackfills = getPendingBackfills();
+      const forceBackfill = pendingBackfills.length > 0;
+      
+      if (client || forceBackfill) {
+        try {
+          await checkAndPost(options.dryRun, forceBackfill);
+        } catch (err) {
+          console.error('Error during scheduled check:', err);
+        }
       }
-      checkAndPost(options.dryRun, forceBackfill);
     }
-  });
+    
+    // Sleep for 10 seconds before checking again
+    await new Promise(resolve => setTimeout(resolve, 10000));
+  }
 }
 
 main();

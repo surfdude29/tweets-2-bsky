@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import bcrypt from 'bcryptjs';
@@ -117,6 +118,24 @@ app.delete('/api/mappings/:id', authenticateToken, (req, res) => {
   res.json({ success: true });
 });
 
+app.delete('/api/mappings/:id/cache', authenticateToken, requireAdmin, (req, res) => {
+  const { id } = req.params;
+  const config = getConfig();
+  const mapping = config.mappings.find((m) => m.id === id);
+  if (!mapping) {
+    res.status(404).json({ error: 'Mapping not found' });
+    return;
+  }
+
+  const cachePath = path.join(__dirname, '../processed', `${mapping.twitterUsername.toLowerCase()}.json`);
+  if (fs.existsSync(cachePath)) {
+    fs.unlinkSync(cachePath);
+    res.json({ success: true, message: 'Cache cleared' });
+  } else {
+    res.json({ success: true, message: 'No cache found' });
+  }
+});
+
 // --- Twitter Config Routes (Admin Only) ---
 
 app.get('/api/twitter-config', authenticateToken, requireAdmin, (_req, res) => {
@@ -189,6 +208,10 @@ export function updateLastCheckTime() {
 
 export function getPendingBackfills(): string[] {
   return [...pendingBackfills];
+}
+
+export function getNextCheckTime(): number {
+  return nextCheckTime;
 }
 
 export function clearBackfill(id: string) {
