@@ -33,6 +33,14 @@ const authenticateToken = (req: any, res: any, next: any) => {
   });
 };
 
+// Middleware to require admin access
+const requireAdmin = (req: any, res: any, next: any) => {
+  if (!req.user.isAdmin) {
+    return res.status(403).json({ error: 'Admin access required' });
+  }
+  next();
+};
+
 // --- Auth Routes ---
 
 app.post('/api/register', async (req, res) => {
@@ -61,8 +69,14 @@ app.post('/api/login', async (req, res) => {
     return;
   }
 
-  const token = jwt.sign({ email: user.email }, JWT_SECRET, { expiresIn: '24h' });
-  res.json({ token });
+  const userIndex = config.users.findIndex((u) => u.email === email);
+  const isAdmin = userIndex === 0;
+  const token = jwt.sign({ email: user.email, isAdmin }, JWT_SECRET, { expiresIn: '24h' });
+  res.json({ token, isAdmin });
+});
+
+app.get('/api/me', authenticateToken, (req: any, res) => {
+  res.json({ email: req.user.email, isAdmin: req.user.isAdmin });
 });
 
 // --- Mapping Routes ---
@@ -99,14 +113,14 @@ app.delete('/api/mappings/:id', authenticateToken, (req, res) => {
   res.json({ success: true });
 });
 
-// --- Twitter Config Routes ---
+// --- Twitter Config Routes (Admin Only) ---
 
-app.get('/api/twitter-config', authenticateToken, (_req, res) => {
+app.get('/api/twitter-config', authenticateToken, requireAdmin, (_req, res) => {
   const config = getConfig();
   res.json(config.twitter);
 });
 
-app.post('/api/twitter-config', authenticateToken, (req, res) => {
+app.post('/api/twitter-config', authenticateToken, requireAdmin, (req, res) => {
   const { authToken, ct0 } = req.body;
   const config = getConfig();
   config.twitter = { authToken, ct0 };

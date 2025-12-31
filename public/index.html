@@ -32,6 +32,7 @@
             const [view, setView] = useState('login'); // login, register, dashboard
             const [mappings, setMappings] = useState([]);
             const [twitterConfig, setTwitterConfig] = useState({ authToken: '', ct0: '' });
+            const [isAdmin, setIsAdmin] = useState(false);
             const [loading, setLoading] = useState(false);
             const [error, setError] = useState('');
 
@@ -45,12 +46,16 @@
             const fetchData = async () => {
                 try {
                     const headers = { Authorization: `Bearer ${token}` };
-                    const [mapRes, twitRes] = await Promise.all([
-                        axios.get('/api/mappings', { headers }),
-                        axios.get('/api/twitter-config', { headers })
+                    const [meRes, mapRes] = await Promise.all([
+                        axios.get('/api/me', { headers }),
+                        axios.get('/api/mappings', { headers })
                     ]);
+                    setIsAdmin(meRes.data.isAdmin);
                     setMappings(mapRes.data);
-                    setTwitterConfig(twitRes.data);
+                    if (meRes.data.isAdmin) {
+                        const twitRes = await axios.get('/api/twitter-config', { headers });
+                        setTwitterConfig(twitRes.data);
+                    }
                 } catch (err) {
                     if (err.response?.status === 401) handleLogout();
                 }
@@ -66,6 +71,7 @@
                     });
                     localStorage.setItem('token', res.data.token);
                     setToken(res.data.token);
+                    setIsAdmin(res.data.isAdmin);
                 } catch (err) {
                     setError('Invalid credentials');
                 }
@@ -181,7 +187,8 @@
 
                     <div className="container">
                         <div className="row">
-                            {/* Left Column: Twitter Config */}
+                            {/* Left Column: Twitter Config (Admin Only) */}
+                            {isAdmin && (
                             <div className="col-md-4 mb-4">
                                 <div className="card p-3 mb-4">
                                     <h5 className="mb-3 d-flex align-items-center">
@@ -228,9 +235,10 @@
                                     </form>
                                 </div>
                             </div>
+                            )}
 
                             {/* Right Column: Active Mappings */}
-                            <div className="col-md-8">
+                            <div className={isAdmin ? "col-md-8" : "col-md-12"}>
                                 <div className="card p-3">
                                     <h5 className="mb-4 d-flex align-items-center">
                                         <span className="material-icons me-2">list</span> Active Sync Tasks
