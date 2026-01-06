@@ -353,55 +353,57 @@ async function uploadToBluesky(agent: BskyAgent, buffer: Buffer, mimeType: strin
     try {
       let image = sharp(buffer);
       const metadata = await image.metadata();
+      let currentBuffer = buffer;
+      let width = metadata.width || 2000;
+      let quality = 90;
 
-      if (isAnimation) {
-        console.log(`[UPLOAD] 🖼️ Preserving animation format.`);
-        if (isWebp && buffer.length > MAX_SIZE) {
-          image = image.webp({ quality: 90, effort: 6 });
-        }
-      } else {
-        if (metadata.width && metadata.width > 2000) {
-          image = image.resize(2000, undefined, { withoutEnlargement: true });
-        }
-
-        if (isPng) {
-          if (metadata.hasAlpha) {
-            image = image.png({ compressionLevel: 9, adaptiveFiltering: true });
-          } else {
-            image = image.jpeg({ quality: 92, mozjpeg: true });
+      // Iterative compression loop
+      let attempts = 0;
+      while (currentBuffer.length > MAX_SIZE && attempts < 5) {
+        attempts++;
+        console.log(`[UPLOAD] 📉 Compression attempt ${attempts}: Width ${width}, Quality ${quality}...`);
+        
+        if (isAnimation) {
+             // For animations (GIF/WebP), we can only do so much without losing frames
+             // Try to convert to WebP if it's a GIF, or optimize WebP
+             image = sharp(buffer, { animated: true });
+             if (isGif) {
+                 // Convert GIF to WebP for better compression
+                 image = image.webp({ quality: Math.max(quality, 50), effort: 6 });
+                 finalMimeType = 'image/webp';
+             } else {
+                 image = image.webp({ quality: Math.max(quality, 50), effort: 6 });
+             }
+             // Resize if really big
+             if (metadata.width && metadata.width > 800) {
+                 image = image.resize({ width: 800, withoutEnlargement: true });
+             }
+        } else {
+            // Static images
+            if (width > 1600) width = 1600;
+            else if (attempts > 1) width = Math.floor(width * 0.8);
+            
+            quality = Math.max(50, quality - 10);
+            
+            image = sharp(buffer)
+                .resize({ width, withoutEnlargement: true })
+                .jpeg({ quality, mozjpeg: true });
+            
             finalMimeType = 'image/jpeg';
-          }
-        } else if (isJpeg) {
-          if (buffer.length > MAX_SIZE) {
-            image = image.jpeg({ quality: 92, mozjpeg: true });
-          }
-        } else {
-          image = image.jpeg({ quality: 92, mozjpeg: true });
-          finalMimeType = 'image/jpeg';
+        }
+        
+        currentBuffer = await image.toBuffer();
+        if (currentBuffer.length <= MAX_SIZE) {
+            finalBuffer = currentBuffer;
+            console.log(`[UPLOAD] ✅ Optimized to ${(finalBuffer.length / 1024).toFixed(2)} KB`);
+            break;
         }
       }
-
-      finalBuffer = await image.toBuffer();
-      console.log(`[UPLOAD] ✅ Optimized to ${(finalBuffer.length / 1024).toFixed(2)} KB`);
-
-      if (finalBuffer.length > MAX_SIZE && !isAnimation) {
-        console.log(`[UPLOAD] ⚠️ Still large, trying higher compression...`);
-        const pipeline = sharp(buffer);
-        const md = await pipeline.metadata();
-
-        if (md.width && md.width > 1600) {
-          pipeline.resize(1600, undefined, { withoutEnlargement: true });
-        }
-
-        if (mimeType === 'image/png' && md.hasAlpha) {
-          finalBuffer = await pipeline.png({ compressionLevel: 9 }).toBuffer();
-          finalMimeType = 'image/png';
-        } else {
-          finalBuffer = await pipeline.jpeg({ quality: 85, mozjpeg: true }).toBuffer();
-          finalMimeType = 'image/jpeg';
-        }
-        console.log(`[UPLOAD] ✅ Further compressed to ${(finalBuffer.length / 1024).toFixed(2)} KB`);
+      
+      if (finalBuffer.length > MAX_SIZE) {
+          console.warn(`[UPLOAD] ⚠️ Could not compress below limit. Current: ${(finalBuffer.length / 1024).toFixed(2)} KB. Upload might fail.`);
       }
+
     } catch (err) {
       console.warn(`[UPLOAD] ⚠️ Optimization failed, attempting original upload:`, (err as Error).message);
       finalBuffer = buffer;
@@ -537,7 +539,9 @@ async function fetchEmbedUrlCard(agent: BskyAgent, url: string): Promise<any> {
   try {
     const response = await axios.get(url, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; Tweets2Bsky/1.0; +https://github.com/j4ckxyz/tweets-2-bsky)',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
       },
       timeout: 10000,
     });
@@ -639,6 +643,10 @@ async function uploadVideoToBluesky(agent: BskyAgent, buffer: Buffer, filename: 
         if (errorJson.error === "already_exists" && errorJson.jobId) {
           console.log(`[VIDEO] ♻️ Video already exists. Resuming with Job ID: ${errorJson.jobId}`);
           return await pollForVideoProcessing(agent, errorJson.jobId);
+        }
+        if (errorJson.error === "unconfirmed_email" || (errorJson.jobStatus && errorJson.jobStatus.error === "unconfirmed_email")) {
+            console.error(`[VIDEO] 🛑 BLUESKY ERROR: Your email is unconfirmed. You MUST verify your email on Bluesky to upload videos.`);
+            throw new Error("Bluesky Email Unconfirmed - Video Upload Rejected");
         }
       } catch (e) {
         // Not JSON or missing fields, proceed with throwing
