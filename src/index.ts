@@ -1026,17 +1026,25 @@ async function checkAndPost(dryRun = false, forceBackfill = false): Promise<void
         console.log(`[${mapping.bskyIdentifier}] Running backfill for ${mapping.twitterUsernames.length} accounts (limit ${limit})...`);
         
         for (const twitterUsername of mapping.twitterUsernames) {
-            updateAppStatus({ state: 'backfilling', currentAccount: twitterUsername, message: `Starting backfill (limit ${limit})...` });
-            await importHistory(twitterUsername, mapping.bskyIdentifier, limit, dryRun);
+            try {
+              updateAppStatus({ state: 'backfilling', currentAccount: twitterUsername, message: `Starting backfill (limit ${limit})...` });
+              await importHistory(twitterUsername, mapping.bskyIdentifier, limit, dryRun);
+            } catch (err) {
+              console.error(`❌ Error backfilling ${twitterUsername}:`, err);
+            }
         }
         clearBackfill(mapping.id);
         console.log(`[${mapping.bskyIdentifier}] Backfill complete.`);
       } else {
         for (const twitterUsername of mapping.twitterUsernames) {
-            updateAppStatus({ state: 'checking', currentAccount: twitterUsername, message: 'Fetching latest tweets...' });
-            const result = await safeSearch(`from:${twitterUsername}`, 30);
-            if (!result.success || !result.tweets) continue;
-            await processTweets(agent, twitterUsername, mapping.bskyIdentifier, result.tweets, dryRun);
+            try {
+              updateAppStatus({ state: 'checking', currentAccount: twitterUsername, message: 'Fetching latest tweets...' });
+              const result = await safeSearch(`from:${twitterUsername}`, 30);
+              if (!result.success || !result.tweets) continue;
+              await processTweets(agent, twitterUsername, mapping.bskyIdentifier, result.tweets, dryRun);
+            } catch (err) {
+              console.error(`❌ Error checking ${twitterUsername}:`, err);
+            }
         }
       }
     } catch (err) {
