@@ -18,26 +18,22 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 
 // ... existing code ...
 
-async function generateAltText(buffer: Buffer, mimeType: string): Promise<string | undefined> {
+async function generateAltText(buffer: Buffer, mimeType: string, contextText: string): Promise<string | undefined> {
   const config = getConfig();
-  const apiKey = config.geminiApiKey || 'AIzaSyCByANEpkVGkYG6559CqBRlDVKh24dbxE8'; // Fallback to provided key if not set
+  const apiKey = config.geminiApiKey || 'AIzaSyCByANEpkVGkYG6559CqBRlDVKh24dbxE8'; 
   
   if (!apiKey) return undefined;
 
   try {
     const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: 'models/gemini-2.0-flash' }); // Updated to 2.0-flash as likely intended, user said 2.5 but likely meant 1.5 or 2.0. 
-    // Actually, user explicitly said "models/gemini-2.5-flash". I will try to use exactly what they said, 
-    // but if it fails I might need to fallback. 
-    // Let's stick to the prompt's request exactly first.
-    
-    // NOTE: 'gemini-2.5-flash' is not a standard known model at this time (Jan 2026 context). 
-    // It might be a custom fine-tune or a future preview. 
-    // I will use it as requested.
     const modelRequested = genAI.getGenerativeModel({ model: 'models/gemini-2.5-flash' });
 
+    const prompt = `Describe this image for alt text. Be concise but descriptive. 
+    Context from the tweet text: "${contextText}". 
+    Use the context to identify specific people, objects, or context mentioned, but describe what is visually present in the image.`;
+
     const result = await modelRequested.generateContent([
-      "Describe this image in detail for alt text. Be concise but descriptive.",
+      prompt,
       {
         inlineData: {
           data: buffer.toString('base64'),
@@ -873,7 +869,8 @@ async function processTweets(
           let altText = media.ext_alt_text;
           if (!altText) {
              console.log(`[${twitterUsername}] 🤖 Generating alt text via Gemini...`);
-             altText = await generateAltText(buffer, mimeType);
+             // Use original tweet text for context, not the modified/cleaned one
+             altText = await generateAltText(buffer, mimeType, tweetText);
              if (altText) console.log(`[${twitterUsername}] ✅ Alt text generated: ${altText.substring(0, 50)}...`);
           }
 
