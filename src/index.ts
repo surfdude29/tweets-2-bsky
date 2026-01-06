@@ -833,11 +833,20 @@ async function processTweets(
       if (tco && expanded) text = text.replace(tco, expanded);
     }
 
+    // Fallback: Regex for t.co links (if entities failed or missed one)
     const tcoRegex = /https:\/\/t\.co\/[a-zA-Z0-9]+/g;
     const matches = text.match(tcoRegex) || [];
     for (const tco of matches) {
+      // Avoid re-resolving if we already handled it via entities
+      if (urls.some(u => u.url === tco)) continue;
+
+      console.log(`[${twitterUsername}] 🔍 Resolving fallback link: ${tco}`);
       const resolved = await expandUrl(tco);
-      if (resolved !== tco) text = text.replace(tco, resolved);
+      if (resolved !== tco) {
+          text = text.replace(tco, resolved);
+          // Add to urls array so it can be used for card embedding later
+          urls.push({ url: tco, expanded_url: resolved });
+      }
     }
 
     // 2. Media Handling
