@@ -1051,7 +1051,7 @@ async function checkAndPost(dryRun = false, forceBackfill = false): Promise<void
   }
 }
 
-async function importHistory(twitterUsername: string, bskyIdentifier: string, limit = 15, dryRun = false): Promise<void> {
+async function importHistory(twitterUsername: string, bskyIdentifier: string, limit = 15, dryRun = false, ignoreCancellation = false): Promise<void> {
   const config = getConfig();
   const mapping = config.mappings.find((m) => m.twitterUsernames.map(u => u.toLowerCase()).includes(twitterUsername.toLowerCase()));
   if (!mapping) {
@@ -1071,11 +1071,13 @@ async function importHistory(twitterUsername: string, bskyIdentifier: string, li
   const processedTweets = loadProcessedTweets(bskyIdentifier);
 
   while (true) {
-    // Check if this backfill request was cancelled
-    const stillPending = getPendingBackfills().some(b => b.id === mapping.id);
-    if (!stillPending) {
-      console.log(`[${twitterUsername}] 🛑 Backfill cancelled by user.`);
-      return;
+    // Check if this backfill request was cancelled (unless ignoring check)
+    if (!ignoreCancellation) {
+      const stillPending = getPendingBackfills().some(b => b.id === mapping.id);
+      if (!stillPending) {
+        console.log(`[${twitterUsername}] 🛑 Backfill cancelled by user.`);
+        return;
+      }
     }
 
     let query = `from:${twitterUsername}`;
@@ -1172,7 +1174,7 @@ async function main(): Promise<void> {
       console.error(`No mapping found for ${options.username}`);
       process.exit(1);
     }
-    await importHistory(options.username, mapping.bskyIdentifier, options.limit, options.dryRun);
+    await importHistory(options.username, mapping.bskyIdentifier, options.limit, options.dryRun, true);
     process.exit(0);
   }
 
