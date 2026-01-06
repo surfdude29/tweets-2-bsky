@@ -1,84 +1,95 @@
-# 🐦 Tweets-2-Bsky
+# Tweets-2-Bsky
 
-> **Note**: This project is built on top of [**bird**](https://github.com/steipete/bird) by [@steipete](https://github.com/steipete), which provides the core Twitter interaction capabilities.
+A powerful tool to crosspost Tweets to Bluesky, supporting threads, videos, and high-quality images.
 
-A powerful tool to crosspost your Tweets to Bluesky automatically. Now features a **Web Dashboard** for easy management, **Multi-account support** for different owners, and **Custom PDS** hosting support.
+## Features
 
-## ✨ Features
+- 🔄 **Crossposting**: Automatically mirrors your Tweets to Bluesky.
+- 🧵 **Thread Support**: INTELLIGENTLY handles threads, posting them as Bluesky threads.
+- 📹 **Video & GIF Support**: Downloads and uploads videos/GIFs natively to Bluesky (not just links!).
+- 🖼️ **High-Quality Images**: Fetches the highest resolution images available.
+- 🔗 **Smart Link Expansion**: Resolves `t.co` links to their original URLs.
+- 👥 **Multiple Source Accounts**: Map multiple Twitter accounts to a single Bluesky profile.
+- ⚙️ **Web Dashboard**: Manage accounts, view status, and trigger runs via a modern UI.
+- 🛠️ **CLI & Web Support**: Use the command line or the web interface.
 
-- **Web Dashboard**: Modern interface to manage all your sync tasks.
-- **Multi-User Mapping**: Let others add their accounts (e.g., Dan, Josh) with their own owners.
-- **Multi-Account Support**: Sync Twitter A -> Bluesky A, Twitter B -> Bluesky B, etc.
-- **Tailscale Ready**: Accessible over your local network or VPN.
-- **Interactive CLI**: Manage everything from the terminal with `./crosspost`.
-- **High Quality**: Supports threads, high-quality images, and videos.
+## Quick Start
 
----
+1.  **Clone the repository:**
+    ```bash
+    git clone https://github.com/yourusername/tweets-2-bsky.git
+    cd tweets-2-bsky
+    ```
 
-## 🚀 Quick Start
+2.  **Install dependencies:**
+    ```bash
+    npm install
+    ```
 
-### 1. Prerequisites
-- **Node.js** installed.
-- A Twitter account (burner recommended) for global cookies.
-- Bluesky account(s) with **App Passwords**.
+3.  **Build the project:**
+    ```bash
+    npm run build
+    ```
 
-### 2. Installation
+4.  **Start the server:**
+    ```bash
+    npm start
+    ```
+    Access the dashboard at `http://localhost:3000`.
+
+## Updating
+
+To update to the latest version without losing your configuration:
+
 ```bash
-git clone https://github.com/j4ckxyz/tweets-2-bsky.git
-cd tweets-2-bsky
-npm install
-npm run build
+./update.sh
 ```
 
-### 3. Start Syncing & Web UI
-```bash
-# This starts both the sync daemon AND the web dashboard
-npm start
-```
-By default, the web interface runs at **http://localhost:3000**. If you are using Tailscale, it's accessible at `http://your-tailscale-ip:3000`.
+This script will pull the latest code, install dependencies, and rebuild the project. **Restart your application** after running the update.
 
-### 4. Setup (Web Dashboard)
-1. Open the dashboard in your browser.
-2. **Register** a new account (email/password).
-3. Log in and go to **Global Twitter Config** to enter your cookies.
-4. Use **Add New Mapping** to connect a Twitter handle to a Bluesky account.
+## Configuration & Security
 
----
+### Environment Variables
 
-## 🛠 Advanced Usage
+Create a `.env` file for security (optional but recommended):
 
-### Disable Web Interface
-If you only want to run the sync daemon without the web UI:
-```bash
-npm start -- --no-web
+```env
+PORT=3000
+JWT_SECRET=your-super-secret-key-change-this
 ```
 
-### Command Line Interface (CLI)
-You can still manage everything via the terminal:
-```bash
-# Set Twitter cookies
-./crosspost setup-twitter
+> **⚠️ Security Note:** If you do not set `JWT_SECRET`, a fallback secret is used. For production or public-facing deployments, **YOU MUST SET A STRONG SECRET**.
 
-# Add a mapping
-./crosspost add-mapping
+### Data Storage
 
-# List/Remove
-./crosspost list
-./crosspost remove
-```
+- **`config.json`**: Stores your account mappings and encrypted web user passwords. Note that Bluesky app passwords are stored in plain text here to facilitate automated login. **Do not share this file.**
+- **`data/database.sqlite`**: Stores the history of processed tweets to prevent duplicates.
 
-### Backfilling Old Tweets
-```bash
-# Example: Import the last 20 tweets for a user
-npm run import -- --username YOUR_TWITTER_HANDLE --limit 20
-```
+## Usage
 
----
+### Web Interface
 
-## ⚙️ How to get Twitter Cookies
-1. Log in to Twitter in your browser.
-2. Open **Developer Tools** (F12) -> **Application** tab -> **Cookies**.
-3. Copy `auth_token` and `ct0` values.
+1.  Register your first account (this user becomes the **Admin**).
+2.  Go to settings to configure your Twitter Auth Token and CT0 (cookies).
+3.  Add mappings:
+    *   Enter one or more **Twitter Usernames** (comma-separated).
+    *   Enter your **Bluesky Handle** and **App Password**.
+4.  The system will check for new tweets every 5 minutes (configurable).
 
-## ⚖️ License
+### CLI
+
+- **Add Mapping**: `npm run cli add-mapping`
+- **Edit Mapping**: `npm run cli edit-mapping`
+- **Import History**: `npm run cli import-history`
+- **List Accounts**: `npm run cli list`
+
+## Twitter Cookies (Auth)
+
+You need your Twitter `auth_token` and `ct0` cookies.
+1.  Log in to Twitter/X in your browser.
+2.  Open Developer Tools (F12) -> Application -> Cookies.
+3.  Copy the values for `auth_token` and `ct0`.
+
+## License
+
 MIT

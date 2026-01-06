@@ -39,8 +39,8 @@ program
     const answers = await inquirer.prompt([
       {
         type: 'input',
-        name: 'twitterUsername',
-        message: 'Twitter username to watch (without @):',
+        name: 'twitterUsernames',
+        message: 'Twitter username(s) to watch (comma separated, without @):',
       },
       {
         type: 'input',
@@ -59,8 +59,89 @@ program
         default: 'https://bsky.social',
       },
     ]);
-    addMapping(answers);
+    
+    const usernames = answers.twitterUsernames.split(',').map((u: string) => u.trim()).filter((u: string) => u.length > 0);
+    
+    addMapping({
+      ...answers,
+      twitterUsernames: usernames,
+    });
     console.log('Mapping added successfully!');
+  });
+
+program
+  .command('edit-mapping')
+  .description('Edit an existing mapping')
+  .action(async () => {
+    const config = getConfig();
+    if (config.mappings.length === 0) {
+      console.log('No mappings found.');
+      return;
+    }
+    
+    const { id } = await inquirer.prompt([
+      {
+        type: 'list',
+        name: 'id',
+        message: 'Select a mapping to edit:',
+        choices: config.mappings.map((m) => ({
+          name: `${m.twitterUsernames.join(', ')} -> ${m.bskyIdentifier}`,
+          value: m.id,
+        })),
+      },
+    ]);
+
+    const mapping = config.mappings.find((m) => m.id === id);
+    if (!mapping) return;
+
+    const answers = await inquirer.prompt([
+      {
+        type: 'input',
+        name: 'twitterUsernames',
+        message: 'Twitter username(s) (comma separated):',
+        default: mapping.twitterUsernames.join(', '),
+      },
+      {
+        type: 'input',
+        name: 'bskyIdentifier',
+        message: 'Bluesky identifier:',
+        default: mapping.bskyIdentifier,
+      },
+      {
+        type: 'password',
+        name: 'bskyPassword',
+        message: 'Bluesky app password (leave empty to keep current):',
+      },
+      {
+        type: 'input',
+        name: 'bskyServiceUrl',
+        message: 'Bluesky service URL:',
+        default: mapping.bskyServiceUrl || 'https://bsky.social',
+      },
+    ]);
+
+    const usernames = answers.twitterUsernames.split(',').map((u: string) => u.trim()).filter((u: string) => u.length > 0);
+
+    // Update the mapping directly
+    const index = config.mappings.findIndex(m => m.id === id);
+    const existingMapping = config.mappings[index];
+    
+    if (index !== -1 && existingMapping) {
+       const updatedMapping = {
+         ...existingMapping,
+         twitterUsernames: usernames,
+         bskyIdentifier: answers.bskyIdentifier,
+         bskyServiceUrl: answers.bskyServiceUrl,
+       };
+       
+       if (answers.bskyPassword && answers.bskyPassword.trim().length > 0) {
+         updatedMapping.bskyPassword = answers.bskyPassword;
+       }
+       
+       config.mappings[index] = updatedMapping;
+       saveConfig(config);
+       console.log('Mapping updated successfully!');
+    }
   });
 
 program
@@ -75,7 +156,7 @@ program
     console.table(
       config.mappings.map((m) => ({
         id: m.id,
-        twitter: m.twitterUsername,
+        twitter: m.twitterUsernames.join(', '),
         bsky: m.bskyIdentifier,
         enabled: m.enabled,
       })),
@@ -97,7 +178,7 @@ program
         name: 'id',
         message: 'Select a mapping to remove:',
         choices: config.mappings.map((m) => ({
-          name: `${m.twitterUsername} -> ${m.bskyIdentifier}`,
+          name: `${m.twitterUsernames.join(', ')} -> ${m.bskyIdentifier}`,
           value: m.id,
         })),
       },
@@ -121,7 +202,7 @@ program
         name: 'id',
         message: 'Select a mapping to import history for:',
         choices: config.mappings.map((m) => ({
-          name: `${m.twitterUsername} -> ${m.bskyIdentifier}`,
+          name: `${m.twitterUsernames.join(', ')} -> ${m.bskyIdentifier}`,
           value: m.id,
         })),
       },
@@ -131,15 +212,17 @@ program
     if (!mapping) return;
 
     console.log(`
-To import history for ${mapping.twitterUsername}, run:`);
-    console.log(`  npm run import -- --username ${mapping.twitterUsername}`);
+To import history, run one of the following commands:`);
+    for (const username of mapping.twitterUsernames) {
+      console.log(`  npm run import -- --username ${username}`);
+    }
     console.log(`
 You can also use additional flags:`);
     console.log('  --limit <number>  Limit the number of tweets to import');
     console.log('  --dry-run         Fetch and show tweets without posting');
     console.log(`
 Example:`);
-    console.log(`  npm run import -- --username ${mapping.twitterUsername} --limit 10 --dry-run
+    console.log(`  npm run import -- --username ${mapping.twitterUsernames[0]} --limit 10 --dry-run
 `);
   });
 

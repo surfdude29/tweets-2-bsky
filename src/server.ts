@@ -111,12 +111,20 @@ app.get('/api/mappings', authenticateToken, (_req, res) => {
 });
 
 app.post('/api/mappings', authenticateToken, (req, res) => {
-  const { twitterUsername, bskyIdentifier, bskyPassword, bskyServiceUrl, owner } = req.body;
+  const { twitterUsernames, bskyIdentifier, bskyPassword, bskyServiceUrl, owner } = req.body;
   const config = getConfig();
+
+  // Handle both array and comma-separated string
+  let usernames: string[] = [];
+  if (Array.isArray(twitterUsernames)) {
+    usernames = twitterUsernames;
+  } else if (typeof twitterUsernames === 'string') {
+    usernames = twitterUsernames.split(',').map(u => u.trim()).filter(u => u.length > 0);
+  }
 
   const newMapping = {
     id: Math.random().toString(36).substring(7),
-    twitterUsername,
+    twitterUsernames: usernames,
     bskyIdentifier,
     bskyPassword,
     bskyServiceUrl: bskyServiceUrl || 'https://bsky.social',
@@ -127,6 +135,43 @@ app.post('/api/mappings', authenticateToken, (req, res) => {
   config.mappings.push(newMapping);
   saveConfig(config);
   res.json(newMapping);
+});
+
+app.put('/api/mappings/:id', authenticateToken, (req, res) => {
+  const { id } = req.params;
+  const { twitterUsernames, bskyIdentifier, bskyPassword, bskyServiceUrl, owner } = req.body;
+  const config = getConfig();
+  
+  const index = config.mappings.findIndex((m) => m.id === id);
+  const existingMapping = config.mappings[index];
+  
+  if (index === -1 || !existingMapping) {
+    res.status(404).json({ error: 'Mapping not found' });
+    return;
+  }
+
+  let usernames: string[] = existingMapping.twitterUsernames;
+  if (twitterUsernames !== undefined) {
+    if (Array.isArray(twitterUsernames)) {
+      usernames = twitterUsernames;
+    } else if (typeof twitterUsernames === 'string') {
+      usernames = twitterUsernames.split(',').map(u => u.trim()).filter(u => u.length > 0);
+    }
+  }
+
+  const updatedMapping = {
+    ...existingMapping,
+    twitterUsernames: usernames,
+    bskyIdentifier: bskyIdentifier || existingMapping.bskyIdentifier,
+    // Only update password if provided
+    bskyPassword: bskyPassword || existingMapping.bskyPassword, 
+    bskyServiceUrl: bskyServiceUrl || existingMapping.bskyServiceUrl,
+    owner: owner || existingMapping.owner,
+  };
+
+  config.mappings[index] = updatedMapping;
+  saveConfig(config);
+  res.json(updatedMapping);
 });
 
 app.delete('/api/mappings/:id', authenticateToken, (req, res) => {
@@ -146,8 +191,11 @@ app.delete('/api/mappings/:id/cache', authenticateToken, requireAdmin, (req, res
     return;
   }
 
-  dbService.deleteTweetsByUsername(mapping.twitterUsername);
-  res.json({ success: true, message: 'Cache cleared' });
+  for (const username of mapping.twitterUsernames) {
+    dbService.deleteTweetsByUsername(username);
+  }
+  
+  res.json({ success: true, message: 'Cache cleared for all associated accounts' });
 });
 
 // --- Twitter Config Routes (Admin Only) ---
@@ -206,7 +254,7 @@ app.post('/api/backfill/:id', authenticateToken, requireAdmin, (req, res) => {
 
   lastCheckTime = 0;
   nextCheckTime = Date.now() + 1000;
-  res.json({ success: true, message: `Backfill queued for @${mapping.twitterUsername}` });
+  res.json({ success: true, message: `Backfill queued for @${mapping.twitterUsernames.join(', ')}` });
 });
 
 app.delete('/api/backfill/:id', authenticateToken, (req, res) => {

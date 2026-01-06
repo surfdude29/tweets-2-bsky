@@ -19,7 +19,7 @@ export interface WebUser {
 
 export interface AccountMapping {
   id: string;
-  twitterUsername: string;
+  twitterUsernames: string[];
   bskyIdentifier: string;
   bskyPassword: string;
   bskyServiceUrl?: string;
@@ -46,6 +46,19 @@ export function getConfig(): AppConfig {
   try {
     const config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
     if (!config.users) config.users = [];
+    
+    // Migration: twitterUsername (string) -> twitterUsernames (string[])
+    // biome-ignore lint/suspicious/noExplicitAny: migration logic
+    config.mappings = config.mappings.map((m: any) => {
+      if (m.twitterUsername && !m.twitterUsernames) {
+        return {
+          ...m,
+          twitterUsernames: [m.twitterUsername],
+        };
+      }
+      return m;
+    });
+
     return config;
   } catch (err) {
     console.error('Error reading config:', err);
@@ -58,7 +71,16 @@ export function getConfig(): AppConfig {
   }
 }
 export function saveConfig(config: AppConfig): void {
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
+  // biome-ignore lint/suspicious/noExplicitAny: cleanup before save
+  const configToSave = { ...config } as any;
+  
+  // Remove legacy field from saved file
+  configToSave.mappings = configToSave.mappings.map((m: any) => {
+    const { twitterUsername, ...rest } = m;
+    return rest;
+  });
+
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify(configToSave, null, 2));
 }
 
 export function addMapping(mapping: Omit<AccountMapping, 'id' | 'enabled'>): void {
@@ -70,6 +92,17 @@ export function addMapping(mapping: Omit<AccountMapping, 'id' | 'enabled'>): voi
   };
   config.mappings.push(newMapping);
   saveConfig(config);
+}
+
+export function updateMapping(id: string, updates: Partial<Omit<AccountMapping, 'id'>>): void {
+  const config = getConfig();
+  const index = config.mappings.findIndex((m) => m.id === id);
+  const existing = config.mappings[index];
+  
+  if (index !== -1 && existing) {
+    config.mappings[index] = { ...existing, ...updates };
+    saveConfig(config);
+  }
 }
 
 export function removeMapping(id: string): void {

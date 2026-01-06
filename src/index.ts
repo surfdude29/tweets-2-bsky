@@ -133,7 +133,7 @@ async function migrateJsonToSqlite() {
   for (const file of files) {
     const username = file.replace('.json', '').toLowerCase();
     // Try to find a matching bskyIdentifier from config
-    const mapping = config.mappings.find(m => m.twitterUsername.toLowerCase() === username);
+    const mapping = config.mappings.find(m => m.twitterUsernames.map(u => u.toLowerCase()).includes(username));
     const bskyIdentifier = mapping?.bskyIdentifier || 'unknown';
 
     try {
@@ -163,7 +163,9 @@ async function migrateJsonToSqlite() {
 
   // REPAIR STEP: Fix any 'unknown' records in SQLite that came from the broken schema migration
   for (const mapping of config.mappings) {
-    dbService.repairUnknownIdentifiers(mapping.twitterUsername, mapping.bskyIdentifier);
+    for (const username of mapping.twitterUsernames) {
+      dbService.repairUnknownIdentifiers(username, mapping.bskyIdentifier);
+    }
   }
   
   console.log('✅ Migration complete.');
@@ -1013,21 +1015,32 @@ async function checkAndPost(dryRun = false, forceBackfill = false): Promise<void
       if (!agent) continue;
 
       const backfillReq = getPendingBackfills().find(b => b.id === mapping.id);
+      
+      // If backfill is requested, we might need to know WHICH username to backfill if specified,
+      // but current logic assumes backfill is for the mapping ID.
+      // If we want to support per-username backfill, we'd need to update the backfill request structure.
+      // For now, if backfill is requested for the MAPPING, we'll backfill ALL usernames in that mapping.
+      
       if (forceBackfill || backfillReq) {
         const limit = backfillReq?.limit || 15;
-        console.log(`[${mapping.twitterUsername}] Running backfill (limit ${limit})...`);
-        updateAppStatus({ state: 'backfilling', currentAccount: mapping.twitterUsername, message: `Starting backfill (limit ${limit})...` });
-        await importHistory(mapping.twitterUsername, mapping.bskyIdentifier, limit, dryRun);
+        console.log(`[${mapping.bskyIdentifier}] Running backfill for ${mapping.twitterUsernames.length} accounts (limit ${limit})...`);
+        
+        for (const twitterUsername of mapping.twitterUsernames) {
+            updateAppStatus({ state: 'backfilling', currentAccount: twitterUsername, message: `Starting backfill (limit ${limit})...` });
+            await importHistory(twitterUsername, mapping.bskyIdentifier, limit, dryRun);
+        }
         clearBackfill(mapping.id);
-        console.log(`[${mapping.twitterUsername}] Backfill complete.`);
+        console.log(`[${mapping.bskyIdentifier}] Backfill complete.`);
       } else {
-        updateAppStatus({ state: 'checking', currentAccount: mapping.twitterUsername, message: 'Fetching latest tweets...' });
-        const result = await safeSearch(`from:${mapping.twitterUsername}`, 30);
-        if (!result.success || !result.tweets) continue;
-        await processTweets(agent, mapping.twitterUsername, mapping.bskyIdentifier, result.tweets, dryRun);
+        for (const twitterUsername of mapping.twitterUsernames) {
+            updateAppStatus({ state: 'checking', currentAccount: twitterUsername, message: 'Fetching latest tweets...' });
+            const result = await safeSearch(`from:${twitterUsername}`, 30);
+            if (!result.success || !result.tweets) continue;
+            await processTweets(agent, twitterUsername, mapping.bskyIdentifier, result.tweets, dryRun);
+        }
       }
     } catch (err) {
-      console.error(`Error processing mapping ${mapping.twitterUsername}:`, err);
+      console.error(`Error processing mapping ${mapping.bskyIdentifier}:`, err);
     }
   }
 
@@ -1040,7 +1053,7 @@ async function checkAndPost(dryRun = false, forceBackfill = false): Promise<void
 
 async function importHistory(twitterUsername: string, bskyIdentifier: string, limit = 15, dryRun = false): Promise<void> {
   const config = getConfig();
-  const mapping = config.mappings.find((m) => m.twitterUsername.toLowerCase() === twitterUsername.toLowerCase());
+  const mapping = config.mappings.find((m) => m.twitterUsernames.map(u => u.toLowerCase()).includes(twitterUsername.toLowerCase()));
   if (!mapping) {
     console.error(`No mapping found for twitter username: ${twitterUsername}`);
     return;
@@ -1154,7 +1167,7 @@ async function main(): Promise<void> {
       console.error('Twitter credentials not set. Cannot import history.');
       process.exit(1);
     }
-    const mapping = config.mappings.find(m => m.twitterUsername.toLowerCase() === options.username.toLowerCase());
+    const mapping = config.mappings.find(m => m.twitterUsernames.map(u => u.toLowerCase()).includes(options.username.toLowerCase()));
     if (!mapping) {
       console.error(`No mapping found for ${options.username}`);
       process.exit(1);
