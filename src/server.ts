@@ -213,15 +213,30 @@ app.post('/api/twitter-config', authenticateToken, requireAdmin, (req, res) => {
   res.json({ success: true });
 });
 
-app.get('/api/gemini-config', authenticateToken, requireAdmin, (_req, res) => {
+app.get('/api/ai-config', authenticateToken, requireAdmin, (_req, res) => {
     const config = getConfig();
-    res.json({ apiKey: config.geminiApiKey || '' });
+    // Return legacy gemini key as part of new structure if needed
+    const aiConfig = config.ai || { 
+        provider: 'gemini', 
+        apiKey: config.geminiApiKey || '' 
+    };
+    res.json(aiConfig);
 });
   
-app.post('/api/gemini-config', authenticateToken, requireAdmin, (req, res) => {
-    const { apiKey } = req.body;
+app.post('/api/ai-config', authenticateToken, requireAdmin, (req, res) => {
+    const { provider, apiKey, model, baseUrl } = req.body;
     const config = getConfig();
-    config.geminiApiKey = apiKey;
+    
+    config.ai = {
+        provider,
+        apiKey,
+        model: model || undefined,
+        baseUrl: baseUrl || undefined
+    };
+    
+    // Clear legacy key to avoid confusion
+    delete config.geminiApiKey;
+    
     saveConfig(config);
     res.json({ success: true });
 });

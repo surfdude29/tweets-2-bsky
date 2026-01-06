@@ -107,7 +107,7 @@
             const [view, setView] = useState(localStorage.getItem('token') ? 'dashboard' : 'login');
             const [mappings, setMappings] = useState([]);
             const [twitterConfig, setTwitterConfig] = useState({ authToken: '', ct0: '' });
-            const [geminiApiKey, setGeminiApiKey] = useState('');
+            const [aiConfig, setAiConfig] = useState({ provider: 'gemini', apiKey: '', model: '', baseUrl: '' });
             const [isAdmin, setIsAdmin] = useState(false);
             const [status, setStatus] = useState({});
             const [loading, setLoading] = useState(false);
@@ -149,8 +149,8 @@
                     if (meRes.data.isAdmin) {
                         const twitRes = await axios.get('/api/twitter-config', { headers });
                         setTwitterConfig(twitRes.data);
-                        const gemRes = await axios.get('/api/gemini-config', { headers });
-                        setGeminiApiKey(gemRes.data.apiKey);
+                        const aiRes = await axios.get('/api/ai-config', { headers });
+                        setAiConfig(aiRes.data || { provider: 'gemini', apiKey: '' });
                     }
                     fetchStatus();
                 } catch (err) {
@@ -353,17 +353,22 @@
                 }
             };
 
-            const updateGemini = async (e) => {
+            const updateAiConfig = async (e) => {
                 e.preventDefault();
                 const formData = new FormData(e.target);
+                const provider = formData.get('provider');
+                
                 try {
-                    await axios.post('/api/gemini-config', {
-                        apiKey: formData.get('apiKey')
+                    await axios.post('/api/ai-config', {
+                        provider: provider,
+                        apiKey: formData.get('apiKey'),
+                        model: formData.get('model'),
+                        baseUrl: formData.get('baseUrl')
                     }, { headers: { Authorization: `Bearer ${token}` } });
-                    alert('Gemini API Key updated!');
+                    alert('AI Config updated!');
                     fetchData();
                 } catch (err) {
-                    alert('Failed to update Gemini config');
+                    alert('Failed to update AI config');
                 }
             };
 
@@ -491,16 +496,45 @@
 
                                         <hr className="my-4" />
 
-                                        <form onSubmit={updateGemini} className="mb-4">
+                                        <form onSubmit={updateAiConfig} className="mb-4">
                                             <h6 className="small text-uppercase text-muted fw-bold mb-3 d-flex justify-content-between">
-                                                Gemini AI (Alt Text)
-                                                <span className="badge bg-light text-dark border">New</span>
+                                                AI Configuration (Alt Text)
+                                                <span className="badge bg-light text-dark border">Updated</span>
                                             </h6>
                                             <div className="mb-3">
-                                                <input name="apiKey" defaultValue={geminiApiKey} className="form-control form-control-sm" placeholder="AIza... (API Key)" />
-                                                <div className="form-text small">Uses <code>gemini-2.0-flash</code> for image descriptions.</div>
+                                                <label className="form-label small fw-bold">Provider</label>
+                                                <select 
+                                                    name="provider" 
+                                                    className="form-select form-select-sm" 
+                                                    defaultValue={aiConfig.provider}
+                                                    onChange={(e) => setAiConfig({...aiConfig, provider: e.target.value})}
+                                                >
+                                                    <option value="gemini">Google Gemini (Default)</option>
+                                                    <option value="openai">OpenAI / OpenRouter</option>
+                                                    <option value="anthropic">Anthropic (Claude)</option>
+                                                    <option value="custom">Custom (OpenAI Compatible)</option>
+                                                </select>
                                             </div>
-                                            <button className="btn btn-light btn-sm w-100 border">Save Gemini Key</button>
+                                            <div className="mb-3">
+                                                <label className="form-label small fw-bold">API Key</label>
+                                                <input name="apiKey" defaultValue={aiConfig.apiKey} className="form-control form-control-sm" placeholder="sk-..." required />
+                                            </div>
+                                            
+                                            {(aiConfig.provider !== 'gemini') && (
+                                                <>
+                                                    <div className="mb-3">
+                                                        <label className="form-label small fw-bold">Model ID (Optional)</label>
+                                                        <input name="model" defaultValue={aiConfig.model} className="form-control form-control-sm" placeholder={aiConfig.provider === 'openai' ? 'gpt-4o' : 'claude-3-5-sonnet'} />
+                                                    </div>
+                                                    <div className="mb-3">
+                                                        <label className="form-label small fw-bold">Base URL (Optional)</label>
+                                                        <input name="baseUrl" defaultValue={aiConfig.baseUrl} className="form-control form-control-sm" placeholder="https://api.openai.com/v1" />
+                                                        <div className="form-text small">Required for OpenRouter or custom endpoints.</div>
+                                                    </div>
+                                                </>
+                                            )}
+                                            
+                                            <button className="btn btn-light btn-sm w-100 border">Save AI Config</button>
                                         </form>
 
                                         <hr className="my-4" />

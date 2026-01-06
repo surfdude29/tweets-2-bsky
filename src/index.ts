@@ -14,40 +14,8 @@ import os from 'node:os';
 import puppeteer from 'puppeteer-core';
 import * as cheerio from 'cheerio';
 import sharp from 'sharp';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { generateAltText } from './ai-manager.js';
 
-// ... existing code ...
-
-async function generateAltText(buffer: Buffer, mimeType: string, contextText: string): Promise<string | undefined> {
-  const config = getConfig();
-  const apiKey = config.geminiApiKey || 'AIzaSyCByANEpkVGkYG6559CqBRlDVKh24dbxE8'; 
-  
-  if (!apiKey) return undefined;
-
-  try {
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const modelRequested = genAI.getGenerativeModel({ model: 'models/gemini-2.5-flash' });
-
-    const prompt = `Describe this image for alt text. Be concise but descriptive. 
-    Context from the tweet text: "${contextText}". 
-    Use the context to identify specific people, objects, or context mentioned, but describe what is visually present in the image.`;
-
-    const result = await modelRequested.generateContent([
-      prompt,
-      {
-        inlineData: {
-          data: buffer.toString('base64'),
-          mimeType
-        }
-      }
-    ]);
-    const response = await result.response;
-    return response.text();
-  } catch (err) {
-    console.warn(`[GEMINI] ⚠️ Failed to generate alt text: ${(err as Error).message}`);
-    return undefined;
-  }
-}
 import { getConfig } from './config-manager.js';
 
 // ESM __dirname equivalent

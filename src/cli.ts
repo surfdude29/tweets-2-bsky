@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import inquirer from 'inquirer';
-import { addMapping, getConfig, removeMapping, saveConfig, updateTwitterConfig } from './config-manager.js';
+import { addMapping, getConfig, removeMapping, saveConfig, updateTwitterConfig, type AIConfig } from './config-manager.js';
 
 const program = new Command();
 
@@ -8,6 +8,66 @@ program
   .name('tweets-2-bsky-cli')
   .description('CLI to manage Twitter to Bluesky crossposting mappings')
   .version('1.0.0');
+
+program
+  .command('setup-ai')
+  .description('Configure AI settings for alt text generation')
+  .action(async () => {
+    const config = getConfig();
+    const currentAi = config.ai || { provider: 'gemini' };
+    
+    // Check legacy gemini key if not in new config
+    if (!config.ai && config.geminiApiKey) {
+        currentAi.apiKey = config.geminiApiKey;
+    }
+
+    const answers = await inquirer.prompt([
+      {
+        type: 'list',
+        name: 'provider',
+        message: 'Select AI Provider:',
+        choices: [
+          { name: 'Google Gemini (Default)', value: 'gemini' },
+          { name: 'OpenAI / OpenRouter', value: 'openai' },
+          { name: 'Anthropic (Claude)', value: 'anthropic' },
+          { name: 'Custom (OpenAI Compatible)', value: 'custom' }
+        ],
+        default: currentAi.provider
+      },
+      {
+        type: 'input',
+        name: 'apiKey',
+        message: 'Enter API Key:',
+        default: currentAi.apiKey,
+      },
+      {
+        type: 'input',
+        name: 'model',
+        message: 'Enter Model ID (optional, leave empty for default):',
+        default: currentAi.model,
+      },
+      {
+        type: 'input',
+        name: 'baseUrl',
+        message: 'Enter Base URL (optional, e.g. for OpenRouter):',
+        default: currentAi.baseUrl,
+        when: (answers) => ['openai', 'anthropic', 'custom'].includes(answers.provider)
+      }
+    ]);
+
+    config.ai = {
+        provider: answers.provider,
+        apiKey: answers.apiKey,
+        model: answers.model || undefined,
+        baseUrl: answers.baseUrl || undefined
+    };
+    
+    // Clear legacy key to avoid confusion
+    delete config.geminiApiKey;
+    
+    saveConfig(config);
+    console.log('AI configuration updated!');
+  });
 
 program
   .command('setup-twitter')

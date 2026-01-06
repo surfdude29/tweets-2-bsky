@@ -17,6 +17,13 @@ export interface WebUser {
   passwordHash: string;
 }
 
+export interface AIConfig {
+  provider: 'gemini' | 'openai' | 'anthropic' | 'custom';
+  apiKey?: string;
+  model?: string;
+  baseUrl?: string;
+}
+
 export interface AccountMapping {
   id: string;
   twitterUsernames: string[];
@@ -33,6 +40,7 @@ export interface AppConfig {
   users: WebUser[];
   checkIntervalMinutes: number;
   geminiApiKey?: string;
+  ai?: AIConfig;
 }
 
 export function getConfig(): AppConfig {
