@@ -38,4 +38,10 @@ if [ $? -ne 0 ]; then
 fi
 
 echo "✅ Update complete!"
-echo "⚠️  Please restart your application service now (e.g., 'pm2 restart tweets-2-bsky' or stop and start the node process)."
+
+if command -v pm2 &> /dev/null; then
+    echo "🔄 Restarting PM2 process with updated environment..."
+    pm2 restart tweets-2-bsky --update-env || pm2 restart all --update-env
+else
+    echo "⚠️  PM2 not found. Please restart your application manually."
+fi
