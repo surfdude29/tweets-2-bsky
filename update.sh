@@ -39,9 +39,18 @@ fi
 
 echo "✅ Update complete!"
 
+# Determine PM2 process name (default to 'tweets-2-bsky' if not found)
+PROCESS_NAME="tweets-2-bsky"
+if pm2 describe twitter-mirror &> /dev/null; then
+    PROCESS_NAME="twitter-mirror"
+fi
+
 if command -v pm2 &> /dev/null; then
-    echo "🔄 Restarting PM2 process with updated environment..."
-    pm2 restart tweets-2-bsky --update-env || pm2 restart all --update-env
+    echo "🔄 Hard restarting PM2 process '$PROCESS_NAME' to fix environment paths..."
+    pm2 delete $PROCESS_NAME
+    pm2 start dist/index.js --name $PROCESS_NAME
+    pm2 save
+    echo "✅ PM2 process restarted and saved."
 else
     echo "⚠️  PM2 not found. Please restart your application manually."
 fi
