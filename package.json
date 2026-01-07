@@ -12,7 +12,8 @@
     "import": "tsx src/index.ts --import-history",
     "lint": "biome check --write .",
     "format": "biome format --write .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "postinstall": "cd twitter-scraper && npm install && npm run build"
   },
   "keywords": [
     "bluesky",
@@ -27,7 +28,7 @@
   "dependencies": {
     "@atproto/api": "^0.18.9",
     "@google/generative-ai": "^0.24.1",
-    "@steipete/bird": "^0.4.0",
+    "@the-convocation/twitter-scraper": "file:./twitter-scraper",
     "axios": "^1.13.2",
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^12.5.0",

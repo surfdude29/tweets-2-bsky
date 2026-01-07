@@ -6,3 +6,4 @@ config.json
 processed/
 npm-debug.log
 .DS_Store
+data/
