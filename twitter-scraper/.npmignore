@@ -1,7 +1,0 @@
-docs/
-src/
-.*/
-jest.config.js
-tsconfig.json
-typedoc.json
-yarn.lock

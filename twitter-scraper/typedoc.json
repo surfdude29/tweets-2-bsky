@@ -1,6 +1,0 @@
-{
-    "entryPointStrategy": "expand",
-    "entryPoints": ["src/_module.ts"],
-    "exclude": ["**/*.test.ts"],
-    "hideGenerator": true
-}
