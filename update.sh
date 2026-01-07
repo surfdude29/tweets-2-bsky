@@ -10,12 +10,15 @@ if ! command -v git &> /dev/null; then
 fi
 
 echo "⬇️  Pulling latest changes..."
-git pull
-
-if [ $? -ne 0 ]; then
-    echo "❌ Git pull failed. You might have local changes."
-    echo "   Try 'git stash' to save your changes, then run this script again."
-    exit 1
+# Attempt to pull with autostash to handle local changes gracefully
+if ! git pull --autostash; then
+    echo "⚠️  Standard pull failed. Attempting to stash local changes and retry..."
+    git stash
+    if ! git pull; then
+        echo "❌ Git pull failed even after stashing. You might have complex local changes."
+        echo "   Please check 'git status' and resolve conflicts manually."
+        exit 1
+    fi
 fi
 
 echo "📦 Installing dependencies..."
