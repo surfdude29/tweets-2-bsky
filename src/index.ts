@@ -99,6 +99,7 @@ interface Tweet {
   in_reply_to_status_id?: string;
   in_reply_to_user_id_str?: string;
   in_reply_to_user_id?: string;
+  isRetweet?: boolean;
   user?: {
     screen_name?: string;
     id_str?: string;
@@ -256,6 +257,7 @@ function mapScraperTweetToLocalTweet(scraperTweet: ScraperTweet): Tweet {
             id_str: scraperTweet.id,
             text: scraperTweet.text,
             full_text: scraperTweet.text,
+            isRetweet: scraperTweet.isRetweet,
             // Construct minimal entities from parsed data
             entities: {
                 urls: scraperTweet.urls.map((url: string) => ({ url, expanded_url: url })),
@@ -277,6 +279,7 @@ function mapScraperTweetToLocalTweet(scraperTweet: ScraperTweet): Tweet {
       text: raw.full_text,
       full_text: raw.full_text,
       created_at: raw.created_at,
+      isRetweet: scraperTweet.isRetweet,
       // biome-ignore lint/suspicious/noExplicitAny: raw types match compatible structure
       entities: raw.entities as any,
       // biome-ignore lint/suspicious/noExplicitAny: raw types match compatible structure
@@ -817,8 +820,14 @@ async function processTweets(
 
     if (processedTweets[tweetId]) continue;
 
-    if (tweet.retweeted_status_id_str) {
+    const isRetweet = tweet.isRetweet || tweet.retweeted_status_id_str || tweet.text?.startsWith('RT @');
+
+    if (isRetweet) {
       console.log(`[${twitterUsername}] ⏩ Skipping retweet ${tweetId}.`);
+      if (!dryRun) {
+          // Save as skipped so we don't check it again
+          saveProcessedTweet(twitterUsername, bskyIdentifier, tweetId, { skipped: true, text: tweet.text });
+      }
       continue;
     }
 
