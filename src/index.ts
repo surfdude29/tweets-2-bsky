@@ -97,6 +97,10 @@ interface Tweet {
   in_reply_to_status_id?: string;
   in_reply_to_user_id_str?: string;
   in_reply_to_user_id?: string;
+  user?: {
+    screen_name?: string;
+    id_str?: string;
+  };
 }
 
 interface AspectRatio {
@@ -254,6 +258,10 @@ function mapScraperTweetToLocalTweet(scraperTweet: ScraperTweet): Tweet {
       in_reply_to_status_id_str: raw.in_reply_to_status_id_str,
       // biome-ignore lint/suspicious/noExplicitAny: missing in LegacyTweetRaw type
       in_reply_to_user_id_str: (raw as any).in_reply_to_user_id_str,
+      user: {
+        screen_name: scraperTweet.username,
+        id_str: scraperTweet.userId,
+      },
     };
 }
 
