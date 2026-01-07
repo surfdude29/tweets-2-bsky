@@ -301,6 +301,12 @@ app.post('/api/backfill/clear-all', authenticateToken, requireAdmin, (_req, res)
   res.json({ success: true, message: 'All backfills cleared' });
 });
 
+app.get('/api/recent-activity', authenticateToken, (req, res) => {
+  const limit = req.query.limit ? Number(req.query.limit) : 50;
+  const tweets = dbService.getRecentProcessedTweets(limit);
+  res.json(tweets);
+});
+
 // Export for use by index.ts
 export function updateLastCheckTime() {
   const config = getConfig();

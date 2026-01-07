@@ -31,6 +31,7 @@ interface ProcessedTweetEntry {
   root?: { uri: string; cid: string };
   migrated?: boolean;
   skipped?: boolean;
+  text?: string;
 }
 
 interface ProcessedTweetsMap {
@@ -181,6 +182,7 @@ function saveProcessedTweet(twitterUsername: string, bskyIdentifier: string, twi
     twitter_id: twitterId,
     twitter_username: twitterUsername.toLowerCase(),
     bsky_identifier: bskyIdentifier.toLowerCase(),
+    tweet_text: entry.text,
     bsky_uri: entry.uri,
     bsky_cid: entry.cid,
     bsky_root_uri: entry.root?.uri,
@@ -738,32 +740,44 @@ async function processTweets(
   tweets: Tweet[],
   dryRun = false,
 ): Promise<void> {
+  // Filter tweets to ensure they're actually from this user
+  const filteredTweets = tweets.filter((t) => {
+    const authorScreenName = t.user?.screen_name?.toLowerCase();
+    if (authorScreenName && authorScreenName !== twitterUsername.toLowerCase()) {
+      console.log(
+        `[${twitterUsername}] ⏩ Skipping tweet ${t.id_str || t.id} - author is @${t.user?.screen_name}, not @${twitterUsername}`,
+      );
+      return false;
+    }
+    return true;
+  });
+
   const processedTweets = loadProcessedTweets(bskyIdentifier);
-  const toProcess = tweets.filter(t => !processedTweets[t.id_str || t.id || '']);
-  
+  const toProcess = filteredTweets.filter((t) => !processedTweets[t.id_str || t.id || '']);
+
   if (toProcess.length === 0) {
     console.log(`[${twitterUsername}] ✅ No new tweets to process for ${bskyIdentifier}.`);
     return;
   }
 
   console.log(`[${twitterUsername}] 🚀 Processing ${toProcess.length} new tweets for ${bskyIdentifier}...`);
-  
-  tweets.reverse();
+
+  filteredTweets.reverse();
   let count = 0;
-  for (const tweet of tweets) {
+  for (const tweet of filteredTweets) {
     count++;
     const tweetId = tweet.id_str || tweet.id;
     if (!tweetId) continue;
 
     if (processedTweets[tweetId]) continue;
 
-    console.log(`\n[${twitterUsername}] 🕒 Processing tweet: ${tweetId}`);
+    console.log(`\n[${twitterUsername}] 🔍 Inspecting tweet: ${tweetId}`);
     updateAppStatus({
       state: 'processing',
       currentAccount: twitterUsername,
       processedCount: count,
-      totalCount: tweets.length,
-      message: `Processing tweet ${tweetId}`,
+      totalCount: filteredTweets.length,
+      message: `Inspecting tweet ${tweetId}`,
     });
 
     const replyStatusId = tweet.in_reply_to_status_id_str || tweet.in_reply_to_status_id;
@@ -780,7 +794,7 @@ async function processTweets(
       } else {
         console.log(`[${twitterUsername}] ⏩ Skipping external/unknown reply.`);
         if (!dryRun) {
-          saveProcessedTweet(twitterUsername, bskyIdentifier, tweetId, { skipped: true });
+          saveProcessedTweet(twitterUsername, bskyIdentifier, tweetId, { skipped: true, text: tweetText });
         }
         continue;
       }
@@ -1082,18 +1096,18 @@ async function processTweets(
             }
         }
         
-        const currentPostInfo = {
-          uri: response.uri,
-          cid: response.cid,
-          root: postRecord.reply ? postRecord.reply.root : { uri: response.uri, cid: response.cid },
-        };
-
-        if (i === 0) {
-          saveProcessedTweet(twitterUsername, bskyIdentifier, tweetId, currentPostInfo);
-        }
+                const currentPostInfo = {
+                  uri: response.uri,
+                  cid: response.cid,
+                  root: postRecord.reply ? postRecord.reply.root : { uri: response.uri, cid: response.cid },
+                  text: tweetText
+                };
         
-        lastPostInfo = currentPostInfo;
-        console.log(`[${twitterUsername}] ✅ Chunk ${i + 1} posted successfully.`);
+                if (i === 0) {
+                  saveProcessedTweet(twitterUsername, bskyIdentifier, tweetId, currentPostInfo);
+                }
+        
+                lastPostInfo = currentPostInfo;        console.log(`[${twitterUsername}] ✅ Chunk ${i + 1} posted successfully.`);
         
         if (chunks.length > 1) {
           await new Promise((r) => setTimeout(r, 3000));

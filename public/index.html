@@ -9,90 +9,116 @@
     <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
     <style>
         :root {
-            --primary-color: #0085ff;
-            --primary-hover: #006bcf;
-            --bg-light: #f8f9fa;
+            --primary-color: #0ea5e9; /* Sky blue */
+            --primary-hover: #0284c7;
+            --bg-light: #f1f5f9;
             --card-light: #ffffff;
-            --text-light: #212529;
+            --text-light: #334155;
             --bg-dark: #0f172a;
             --card-dark: #1e293b;
-            --text-dark: #f8fafc;
+            --text-dark: #f1f5f9;
+            --border-radius: 12px;
         }
         body { 
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; 
-            transition: background-color 0.3s, color 0.3s;
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
             background-color: var(--bg-light);
             color: var(--text-light);
+            transition: background-color 0.3s, color 0.3s;
         }
         [data-bs-theme="dark"] body {
             background-color: var(--bg-dark);
             color: var(--text-dark);
         }
         
-        .navbar { 
-            backdrop-filter: blur(10px); 
-            background-color: rgba(255, 255, 255, 0.8) !important;
-            border-bottom: 1px solid rgba(0,0,0,0.05);
+        .navbar {
+            background-color: var(--card-light) !important;
+            box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1);
         }
         [data-bs-theme="dark"] .navbar {
-            background-color: rgba(30, 41, 59, 0.8) !important;
+            background-color: var(--card-dark) !important;
             border-bottom: 1px solid rgba(255,255,255,0.05);
         }
 
         .card { 
             border: none; 
-            border-radius: 16px; 
-            box-shadow: 0 4px 20px rgba(0,0,0,0.03); 
-            transition: transform 0.2s, box-shadow 0.2s;
+            border-radius: var(--border-radius); 
+            box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
             background-color: var(--card-light);
             margin-bottom: 1.5rem;
+            overflow: hidden;
         }
         [data-bs-theme="dark"] .card {
             background-color: var(--card-dark);
-            box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+            box-shadow: none;
+            border: 1px solid rgba(255,255,255,0.05);
         }
         
+        .card-header {
+            background-color: transparent;
+            border-bottom: 1px solid rgba(0,0,0,0.05);
+            padding: 1rem 1.5rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        [data-bs-theme="dark"] .card-header {
+            border-bottom-color: rgba(255,255,255,0.05);
+        }
+
         .btn-primary { 
             background-color: var(--primary-color); 
             border: none; 
-            border-radius: 8px; 
-            padding: 8px 16px;
             font-weight: 500;
+            padding: 0.5rem 1rem;
         }
         .btn-primary:hover { background-color: var(--primary-hover); }
         
         .form-control, .form-select {
             border-radius: 8px;
-            border: 1px solid #e2e8f0;
-            padding: 10px 12px;
+            border-color: #cbd5e1;
+            padding: 0.6rem 0.8rem;
         }
         [data-bs-theme="dark"] .form-control, [data-bs-theme="dark"] .form-select {
             background-color: #334155;
             border-color: #475569;
-            color: #f8fafc;
+            color: #f1f5f9;
         }
-        [data-bs-theme="dark"] .form-control::placeholder { color: #94a3b8; }
+        
+        .status-badge {
+            font-size: 0.75rem;
+            padding: 0.25rem 0.75rem;
+            border-radius: 9999px;
+            font-weight: 600;
+        }
+        
+        .table > :not(caption) > * > * { padding: 1rem; }
+        
+        .tweet-preview {
+            max-width: 300px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            font-family: monospace;
+            font-size: 0.9em;
+            color: #64748b;
+        }
+        [data-bs-theme="dark"] .tweet-preview { color: #94a3b8; }
 
-        .owner-badge { 
-            background-color: rgba(0, 133, 255, 0.1); 
+        .accordion-button:not(.collapsed) {
+            background-color: rgba(14, 165, 233, 0.1);
             color: var(--primary-color);
-            padding: 4px 10px; 
-            border-radius: 20px; 
-            font-size: 0.75rem; 
-            font-weight: 600; 
         }
-        
-        .status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 8px; }
-        .status-active { background-color: #10b981; box-shadow: 0 0 10px rgba(16, 185, 129, 0.4); }
-        .status-queued { background-color: #f59e0b; box-shadow: 0 0 10px rgba(245, 158, 11, 0.4); }
-        
-        .table > :not(caption) > * > * { padding: 1rem 0.75rem; border-bottom-color: rgba(0,0,0,0.05); }
-        [data-bs-theme="dark"] .table > :not(caption) > * > * { border-bottom-color: rgba(255,255,255,0.05); color: var(--text-dark); }
+        [data-bs-theme="dark"] .accordion-button:not(.collapsed) {
+            background-color: rgba(14, 165, 233, 0.2);
+            color: var(--primary-color);
+        }
     </style>
 </head>
 <body>
     <div id="root"></div>
 
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -108,6 +134,7 @@
             const [mappings, setMappings] = useState([]);
             const [twitterConfig, setTwitterConfig] = useState({ authToken: '', ct0: '' });
             const [aiConfig, setAiConfig] = useState({ provider: 'gemini', apiKey: '', model: '', baseUrl: '' });
+            const [recentActivity, setRecentActivity] = useState([]);
             const [isAdmin, setIsAdmin] = useState(false);
             const [status, setStatus] = useState({});
             const [loading, setLoading] = useState(false);
@@ -115,7 +142,6 @@
             const [countdown, setCountdown] = useState('');
             const [editingMapping, setEditingMapping] = useState(null);
 
-            // ... (keep logic for logout, fetchStatus, etc.) ...
             const handleLogout = useCallback(() => {
                 localStorage.removeItem('token');
                 setToken(null);
@@ -131,10 +157,21 @@
                     });
                     setStatus(res.data);
                 } catch (err) {
-                    console.error('Failed to fetch status');
                     if (err.response?.status === 401) handleLogout();
                 }
             }, [token, handleLogout]);
+
+            const fetchActivity = useCallback(async () => {
+                if (!token) return;
+                try {
+                    const res = await axios.get('/api/recent-activity?limit=20', { 
+                        headers: { Authorization: `Bearer ${token}` } 
+                    });
+                    setRecentActivity(res.data);
+                } catch (err) {
+                    console.error('Failed to fetch activity');
+                }
+            }, [token]);
 
             const fetchData = useCallback(async () => {
                 if (!token) return;
@@ -153,11 +190,12 @@
                         setAiConfig(aiRes.data || { provider: 'gemini', apiKey: '' });
                     }
                     fetchStatus();
+                    fetchActivity();
                 } catch (err) {
                     console.error('Failed to fetch data', err);
                     if (err.response?.status === 401) handleLogout();
                 }
-            }, [token, fetchStatus, handleLogout]);
+            }, [token, fetchStatus, fetchActivity, handleLogout]);
 
             useEffect(() => {
                 document.documentElement.setAttribute('data-bs-theme', darkMode ? 'dark' : 'light');
@@ -175,9 +213,13 @@
 
             useEffect(() => {
                 if (view !== 'dashboard' || !token) return;
-                const statusTimer = setInterval(fetchStatus, 5000); // Faster status poll for better responsiveness
-                return () => clearInterval(statusTimer);
-            }, [view, token, fetchStatus]);
+                const statusTimer = setInterval(fetchStatus, 5000);
+                const activityTimer = setInterval(fetchActivity, 10000);
+                return () => {
+                    clearInterval(statusTimer);
+                    clearInterval(activityTimer);
+                };
+            }, [view, token, fetchStatus, fetchActivity]);
 
             useEffect(() => {
                 if (!status.nextCheckTime) return;
@@ -196,7 +238,7 @@
                 return () => clearInterval(timer);
             }, [status.nextCheckTime]);
 
-            // ... Auth Handlers ...
+            // Handlers (Login, Register, Add/Edit/Delete Mapping, etc.)
             const handleLogin = async (e) => {
                 e.preventDefault();
                 setError('');
@@ -226,7 +268,6 @@
                 }
             };
 
-            // ... Action Handlers ...
             const addMapping = async (e) => {
                 e.preventDefault();
                 setLoading(true);
@@ -297,15 +338,6 @@
                 }
             };
 
-            const cancelBackfill = async (id) => {
-                try {
-                    await axios.delete(`/api/backfill/${id}`, { headers: { Authorization: `Bearer ${token}` } });
-                    fetchStatus();
-                } catch (err) {
-                    alert('Failed to cancel backfill');
-                }
-            };
-
             const clearAllBackfills = async () => {
                 if (!confirm('Stop all pending and running backfills?')) return;
                 try {
@@ -313,16 +345,6 @@
                     fetchStatus();
                 } catch (err) {
                     alert('Failed to clear backfills');
-                }
-            };
-
-            const clearCache = async (id) => {
-                if (!confirm(`Clear processed tweets cache?`)) return;
-                try {
-                    await axios.delete(`/api/mappings/${id}/cache`, { headers: { Authorization: `Bearer ${token}` } });
-                    alert(`Cache cleared`);
-                } catch (err) {
-                    alert('Failed to clear cache');
                 }
             };
 
@@ -356,11 +378,9 @@
             const updateAiConfig = async (e) => {
                 e.preventDefault();
                 const formData = new FormData(e.target);
-                const provider = formData.get('provider');
-                
                 try {
                     await axios.post('/api/ai-config', {
-                        provider: provider,
+                        provider: formData.get('provider'),
                         apiKey: formData.get('apiKey'),
                         model: formData.get('model'),
                         baseUrl: formData.get('baseUrl')
@@ -375,12 +395,12 @@
             if (view === 'login' || view === 'register' || !token) {
                 return (
                     <div className="container d-flex justify-content-center align-items-center min-vh-100">
-                        <div className="card p-5" style={{width: '400px'}}>
+                        <div className="card p-4 border-0 shadow-lg" style={{width: '400px'}}>
                             <div className="text-center mb-4">
                                 <span className="material-icons text-primary" style={{fontSize: '48px'}}>swap_calls</span>
-                                <h3 className="mt-2">{view === 'login' ? 'Welcome Back' : 'Join Us'}</h3>
+                                <h4 className="mt-2 fw-bold">{view === 'login' ? 'Welcome Back' : 'Get Started'}</h4>
                             </div>
-                            {error && <div className="alert alert-danger btn-sm">{error}</div>}
+                            {error && <div className="alert alert-danger py-2 small">{error}</div>}
                             <form onSubmit={view === 'login' ? handleLogin : handleRegister}>
                                 <div className="mb-3">
                                     <label className="form-label small text-muted text-uppercase fw-bold">Email</label>
@@ -394,52 +414,57 @@
                                     {view === 'login' ? 'Login' : 'Create Account'}
                                 </button>
                                 <div className="text-center">
-                                    <a href="#" className="text-decoration-none small" onClick={() => setView(view === 'login' ? 'register' : 'login')}>
+                                    <a href="#" className="text-decoration-none small text-muted" onClick={() => setView(view === 'login' ? 'register' : 'login')}>
                                         {view === 'login' ? 'Need an account? Register' : 'Have an account? Login'}
                                     </a>
                                 </div>
                             </form>
-                            <div className="text-center mt-4 pt-3 border-top">
-                                <button className="btn btn-link btn-sm text-muted text-decoration-none" onClick={() => setDarkMode(!darkMode)}>
-                                    <span className="material-icons align-middle me-1">{darkMode ? 'light_mode' : 'dark_mode'}</span>
-                                    {darkMode ? 'Light Mode' : 'Dark Mode'}
-                                </button>
-                            </div>
                         </div>
                     </div>
                 );
             }
 
             const isBackfillQueued = (id) => status.pendingBackfills?.some(b => (b.id || b) === id);
+            
+            // Check if configs are set to collapse by default
+            const hasTwitterConfig = twitterConfig.authToken && twitterConfig.ct0;
+            const hasAiConfig = aiConfig.apiKey;
 
             return (
                 <div>
-                    <nav className="navbar navbar-expand-lg sticky-top mb-4">
+                    <nav className="navbar navbar-expand-lg sticky-top mb-4 py-3">
                         <div className="container">
                             <span className="navbar-brand d-flex align-items-center">
                                 <span className="material-icons me-2 text-primary">swap_calls</span>
                                 <span className="fw-bold">Tweets-2-Bsky</span>
                             </span>
                             <div className="d-flex align-items-center gap-3">
-                                <div className="d-none d-md-block text-end lh-1 me-2">
-                                    <div className="small fw-bold">Next Check</div>
-                                    <div className="text-primary small">{countdown}</div>
+                                <div className="d-none d-md-block text-end lh-1 me-2 border-end pe-3">
+                                    <div className="small fw-bold text-muted">NEXT RUN</div>
+                                    <div className="text-primary font-monospace">{countdown}</div>
                                 </div>
-                                <button className="btn btn-outline-primary btn-sm d-flex align-items-center" onClick={runNow} title="Run Now">
-                                    <span className="material-icons">play_arrow</span>
+                                <button className="btn btn-primary btn-sm d-flex align-items-center gap-2" onClick={runNow} title="Run Now">
+                                    <span className="material-icons" style={{fontSize: '18px'}}>play_arrow</span> Run Now
                                 </button>
                                 {isAdmin && status.pendingBackfills?.length > 0 && (
-                                    <button className="btn btn-outline-danger btn-sm" onClick={clearAllBackfills} title="Clear Queue">
-                                        <span className="material-icons">layers_clear</span>
+                                    <button className="btn btn-outline-danger btn-sm d-flex align-items-center" onClick={clearAllBackfills} title="Clear Queue">
+                                        <span className="material-icons" style={{fontSize: '18px'}}>layers_clear</span>
                                     </button>
                                 )}
-                                <div className="vr mx-1"></div>
-                                <button className="btn btn-link text-decoration-none text-muted" onClick={() => setDarkMode(!darkMode)}>
-                                    <span className="material-icons">{darkMode ? 'light_mode' : 'dark_mode'}</span>
-                                </button>
-                                <button className="btn btn-link text-decoration-none text-danger" onClick={handleLogout}>
-                                    <span className="material-icons">logout</span>
-                                </button>
+                                <div className="dropdown">
+                                    <button className="btn btn-link text-decoration-none text-muted p-0" data-bs-toggle="dropdown">
+                                        <span className="material-icons" style={{fontSize: '28px'}}>account_circle</span>
+                                    </button>
+                                    <ul className="dropdown-menu dropdown-menu-end border-0 shadow">
+                                        <li><button className="dropdown-item d-flex align-items-center" onClick={() => setDarkMode(!darkMode)}>
+                                            <span className="material-icons me-2 small">{darkMode ? 'light_mode' : 'dark_mode'}</span> Theme
+                                        </button></li>
+                                        <li><hr className="dropdown-divider"/></li>
+                                        <li><button className="dropdown-item d-flex align-items-center text-danger" onClick={handleLogout}>
+                                            <span className="material-icons me-2 small">logout</span> Logout
+                                        </button></li>
+                                    </ul>
+                                </div>
                             </div>
                         </div>
                     </nav>
@@ -475,110 +500,17 @@
                         )}
 
                         <div className="row g-4">
-                            {isAdmin && (
-                            <div className="col-lg-4">
-                                <div className="card h-100">
-                                    <div className="card-body">
-                                        <h5 className="card-title mb-4 d-flex align-items-center">
-                                            <span className="material-icons me-2 text-muted">settings</span> Configuration
-                                        </h5>
-                                        
-                                        <form onSubmit={updateTwitter} className="mb-4">
-                                            <h6 className="small text-uppercase text-muted fw-bold mb-3">Twitter Authentication</h6>
-                                            <div className="mb-3">
-                                                <input name="authToken" defaultValue={twitterConfig.authToken} className="form-control form-control-sm" placeholder="auth_token" required />
-                                            </div>
-                                            <div className="mb-3">
-                                                <input name="ct0" defaultValue={twitterConfig.ct0} className="form-control form-control-sm" placeholder="ct0" required />
-                                            </div>
-                                            <button className="btn btn-light btn-sm w-100 border">Save Twitter Config</button>
-                                        </form>
-
-                                        <hr className="my-4" />
-
-                                        <form onSubmit={updateAiConfig} className="mb-4">
-                                            <h6 className="small text-uppercase text-muted fw-bold mb-3 d-flex justify-content-between">
-                                                AI Configuration (Alt Text)
-                                                <span className="badge bg-light text-dark border">Updated</span>
-                                            </h6>
-                                            <div className="mb-3">
-                                                <label className="form-label small fw-bold">Provider</label>
-                                                <select 
-                                                    name="provider" 
-                                                    className="form-select form-select-sm" 
-                                                    defaultValue={aiConfig.provider}
-                                                    onChange={(e) => setAiConfig({...aiConfig, provider: e.target.value})}
-                                                >
-                                                    <option value="gemini">Google Gemini (Default)</option>
-                                                    <option value="openai">OpenAI / OpenRouter</option>
-                                                    <option value="anthropic">Anthropic (Claude)</option>
-                                                    <option value="custom">Custom (OpenAI Compatible)</option>
-                                                </select>
-                                            </div>
-                                            <div className="mb-3">
-                                                <label className="form-label small fw-bold">API Key</label>
-                                                <input 
-                                                    name="apiKey" 
-                                                    defaultValue={aiConfig.apiKey} 
-                                                    className="form-control form-control-sm" 
-                                                    placeholder={['gemini', 'anthropic'].includes(aiConfig.provider) ? "Required" : "Optional (e.g. for Ollama)"} 
-                                                    required={['gemini', 'anthropic'].includes(aiConfig.provider)}
-                                                />
-                                            </div>
-                                            
-                                            {(aiConfig.provider !== 'gemini') && (
-                                                <>
-                                                    <div className="mb-3">
-                                                        <label className="form-label small fw-bold">Model ID (Optional)</label>
-                                                        <input name="model" defaultValue={aiConfig.model} className="form-control form-control-sm" placeholder={aiConfig.provider === 'openai' ? 'gpt-4o' : 'claude-3-5-sonnet'} />
-                                                    </div>
-                                                    <div className="mb-3">
-                                                        <label className="form-label small fw-bold">Base URL (Optional)</label>
-                                                        <input name="baseUrl" defaultValue={aiConfig.baseUrl} className="form-control form-control-sm" placeholder="https://api.openai.com/v1" />
-                                                        <div className="form-text small">Required for OpenRouter or custom endpoints.</div>
-                                                    </div>
-                                                </>
-                                            )}
-                                            
-                                            <button className="btn btn-light btn-sm w-100 border">Save AI Config</button>
-                                        </form>
-
-                                        <hr className="my-4" />
-
-                                        <form onSubmit={addMapping}>
-                                            <h6 className="small text-uppercase text-muted fw-bold mb-3">Add New Account</h6>
-                                            <div className="mb-2">
-                                                <input name="owner" placeholder="Owner Name" className="form-control form-control-sm" required />
-                                            </div>
-                                            <div className="mb-2">
-                                                <input name="twitterUsernames" placeholder="Twitter User(s)" className="form-control form-control-sm" required />
-                                            </div>
-                                            <div className="mb-2">
-                                                <input name="bskyIdentifier" placeholder="Bluesky Handle" className="form-control form-control-sm" required />
-                                            </div>
-                                            <div className="mb-2">
-                                                <input name="bskyPassword" type="password" placeholder="App Password" className="form-control form-control-sm" required />
-                                            </div>
-                                            <div className="mb-3">
-                                                <input name="bskyServiceUrl" defaultValue="https://bsky.social" className="form-control form-control-sm" />
-                                            </div>
-                                            <button className="btn btn-primary btn-sm w-100 shadow-sm">Add Mapping</button>
-                                        </form>
-                                    </div>
-                                </div>
-                            </div>
-                            )}
-
+                            {/* Main Content Column */}
                             <div className={isAdmin ? "col-lg-8" : "col-12"}>
-                                <div className="card h-100">
-                                    <div className="card-body">
-                                        <div className="d-flex justify-content-between align-items-center mb-4">
-                                            <h5 className="card-title mb-0 d-flex align-items-center">
-                                                <span className="material-icons me-2 text-muted">list</span> Active Accounts
-                                            </h5>
-                                            <span className="badge bg-light text-dark border">{mappings.length} configured</span>
-                                        </div>
-                                        
+                                {/* Accounts List */}
+                                <div className="card">
+                                    <div className="card-header bg-transparent">
+                                        <span className="d-flex align-items-center gap-2">
+                                            <span className="material-icons text-primary">list</span> Active Accounts
+                                        </span>
+                                        <span className="badge bg-secondary bg-opacity-10 text-secondary">{mappings.length} configured</span>
+                                    </div>
+                                    <div className="card-body p-0">
                                         {mappings.length === 0 ? (
                                             <div className="text-center py-5 text-muted">
                                                 <span className="material-icons" style={{fontSize: '48px', opacity: 0.5}}>inbox</span>
@@ -586,24 +518,24 @@
                                             </div>
                                         ) : (
                                             <div className="table-responsive">
-                                                <table className="table align-middle table-hover">
-                                                    <thead>
+                                                <table className="table align-middle mb-0 table-hover">
+                                                    <thead className="bg-light">
                                                         <tr className="text-uppercase small text-muted">
-                                                            <th className="fw-bold">Owner</th>
+                                                            <th className="fw-bold ps-4">Owner</th>
                                                             <th className="fw-bold">Twitter Sources</th>
                                                             <th className="fw-bold">Bluesky Target</th>
                                                             <th className="fw-bold">Status</th>
-                                                            <th className="text-end fw-bold">Actions</th>
+                                                            <th className="text-end fw-bold pe-4">Actions</th>
                                                         </tr>
                                                     </thead>
                                                     <tbody>
                                                         {mappings.map(m => (
                                                             <tr key={m.id}>
-                                                                <td><span className="owner-badge">{m.owner || 'System'}</span></td>
+                                                                <td className="ps-4"><span className="fw-bold text-dark">{m.owner || 'System'}</span></td>
                                                                 <td>
                                                                     <div className="d-flex flex-wrap gap-1">
                                                                         {m.twitterUsernames.map(u => (
-                                                                            <span key={u} className="badge bg-secondary bg-opacity-10 text-secondary border border-secondary border-opacity-25 fw-normal">@{u}</span>
+                                                                            <span key={u} className="badge bg-primary bg-opacity-10 text-primary border border-primary border-opacity-10 fw-normal">@{u}</span>
                                                                         ))}
                                                                     </div>
                                                                 </td>
@@ -611,27 +543,25 @@
                                                                 <td>
                                                                     <div className="d-flex align-items-center">
                                                                         <span className={`status-dot ${isBackfillQueued(m.id) ? 'status-queued' : 'status-active'}`}></span>
-                                                                        <span className="small fw-semibold">{isBackfillQueued(m.id) ? 'Backfilling' : 'Active'}</span>
+                                                                        <span className="badge bg-success bg-opacity-10 text-success border border-success border-opacity-10">{isBackfillQueued(m.id) ? 'Backfilling' : 'Active'}</span>
                                                                     </div>
                                                                 </td>
-                                                                <td className="text-end">
-                                                                    <div className="btn-group">
-                                                                        {isAdmin && (
-                                                                        <>
-                                                                            <button onClick={() => setEditingMapping(m)} className="btn btn-light btn-sm text-primary" title="Edit">
-                                                                                <span className="material-icons" style={{fontSize: '18px'}}>edit</span>
-                                                                            </button>
-                                                                            <button onClick={() => runBackfill(m.id)} className="btn btn-light btn-sm text-warning" title="Backfill">
-                                                                                <span className="material-icons" style={{fontSize: '18px'}}>history</span>
-                                                                            </button>
-                                                                            <button onClick={() => resetAndBackfill(m.id)} className="btn btn-light btn-sm text-danger" title="Reset & Sync">
-                                                                                <span className="material-icons" style={{fontSize: '18px'}}>restart_alt</span>
-                                                                            </button>
-                                                                        </>
-                                                                        )}
-                                                                        <button onClick={() => deleteMapping(m.id)} className="btn btn-light btn-sm text-danger" title="Delete">
-                                                                            <span className="material-icons" style={{fontSize: '18px'}}>delete</span>
+                                                                <td className="text-end pe-4">
+                                                                    <div className="dropdown">
+                                                                        <button className="btn btn-light btn-sm" data-bs-toggle="dropdown">
+                                                                            <span className="material-icons" style={{fontSize: '18px'}}>more_horiz</span>
                                                                         </button>
+                                                                        <ul className="dropdown-menu dropdown-menu-end border-0 shadow">
+                                                                            {isAdmin && (
+                                                                            <>
+                                                                                <li><button className="dropdown-item" onClick={() => setEditingMapping(m)}>Edit</button></li>
+                                                                                <li><button className="dropdown-item" onClick={() => runBackfill(m.id)}>Backfill History</button></li>
+                                                                                <li><button className="dropdown-item text-warning" onClick={() => resetAndBackfill(m.id)}>Reset Cache & Backfill</button></li>
+                                                                                <li><hr className="dropdown-divider"/></li>
+                                                                            </>
+                                                                            )}
+                                                                            <li><button className="dropdown-item text-danger" onClick={() => deleteMapping(m.id)}>Delete</button></li>
+                                                                        </ul>
                                                                     </div>
                                                                 </td>
                                                             </tr>
@@ -642,7 +572,207 @@
                                         )}
                                     </div>
                                 </div>
+
+                                {/* Recent Activity */}
+                                <div className="card">
+                                    <div className="card-header bg-transparent">
+                                        <span className="d-flex align-items-center gap-2">
+                                            <span className="material-icons text-info">history</span> Recent Activity
+                                        </span>
+                                    </div>
+                                    <div className="card-body p-0">
+                                        <div className="table-responsive">
+                                            <table className="table align-middle mb-0 table-hover table-sm">
+                                                <thead className="bg-light">
+                                                    <tr className="text-uppercase small text-muted">
+                                                        <th className="ps-4">Time</th>
+                                                        <th>Twitter User</th>
+                                                        <th>Status</th>
+                                                        <th>Details</th>
+                                                        <th className="text-end pe-4">Links</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {recentActivity.map((log, idx) => (
+                                                        <tr key={idx}>
+                                                            <td className="ps-4 small text-muted" style={{whiteSpace: 'nowrap'}}>
+                                                                {new Date(log.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                                                            </td>
+                                                            <td><span className="fw-semibold text-primary">@{log.twitter_username}</span></td>
+                                                            <td>
+                                                                {log.status === 'migrated' ? 
+                                                                    <span className="badge bg-success bg-opacity-10 text-success">Migrated</span> :
+                                                                    (log.status === 'skipped' ? 
+                                                                        <span className="badge bg-secondary bg-opacity-10 text-secondary">Skipped</span> :
+                                                                        <span className="badge bg-danger bg-opacity-10 text-danger">Failed</span>
+                                                                    )
+                                                                }
+                                                            </td>
+                                                            <td className="small text-muted tweet-preview" title={log.tweet_text || log.twitter_id}>
+                                                                {log.tweet_text || `ID: ${log.twitter_id}`}
+                                                            </td>
+                                                            <td className="text-end pe-4">
+                                                                {log.bsky_uri && (
+                                                                    <a href={`https://bsky.app/profile/${log.bsky_identifier}/post/${log.bsky_uri.split('/').pop()}`} target="_blank" className="btn btn-link btn-sm p-0 text-decoration-none">
+                                                                        <span className="material-icons" style={{fontSize: '16px'}}>open_in_new</span>
+                                                                    </a>
+                                                                )}
+                                                            </td>
+                                                        </tr>
+                                                    ))}
+                                                    {recentActivity.length === 0 && (
+                                                        <tr><td colSpan="5" className="text-center py-4 text-muted">No recent activity found.</td></tr>
+                                                    )}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
+
+                            {/* Sidebar Column (Config) */}
+                            {isAdmin && (
+                            <div className="col-lg-4">
+                                <div className="card">
+                                    <div className="card-header">
+                                        <span className="d-flex align-items-center gap-2">
+                                            <span className="material-icons text-muted">settings</span> Settings
+                                        </span>
+                                    </div>
+                                    <div className="card-body p-0">
+                                        <div className="accordion accordion-flush" id="configAccordion">
+                                            {/* Twitter Config */}
+                                            <div className="accordion-item">
+                                                <h2 className="accordion-header">
+                                                    <button 
+                                                        className={`accordion-button ${hasTwitterConfig ? 'collapsed' : ''}`} 
+                                                        type="button" 
+                                                        data-bs-toggle="collapse" 
+                                                        data-bs-target="#twitterConfig"
+                                                    >
+                                                        <div className="d-flex align-items-center w-100 me-3">
+                                                            <span className="material-icons me-2 small">tag</span> 
+                                                            Twitter Auth
+                                                            {hasTwitterConfig && <span className="ms-auto badge bg-success bg-opacity-10 text-success border border-success border-opacity-10">Configured</span>}
+                                                        </div>
+                                                    </button>
+                                                </h2>
+                                                <div id="twitterConfig" className={`accordion-collapse collapse ${!hasTwitterConfig ? 'show' : ''}`} data-bs-parent="#configAccordion">
+                                                    <div className="accordion-body bg-light bg-opacity-50">
+                                                        <form onSubmit={updateTwitter}>
+                                                            <div className="mb-3">
+                                                                <label className="form-label small fw-bold text-muted">Auth Token</label>
+                                                                <input name="authToken" defaultValue={twitterConfig.authToken} className="form-control form-control-sm" placeholder="auth_token" required />
+                                                            </div>
+                                                            <div className="mb-3">
+                                                                <label className="form-label small fw-bold text-muted">CT0</label>
+                                                                <input name="ct0" defaultValue={twitterConfig.ct0} className="form-control form-control-sm" placeholder="ct0" required />
+                                                            </div>
+                                                            <button className="btn btn-primary btn-sm w-100">Save Credentials</button>
+                                                        </form>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            {/* AI Config */}
+                                            <div className="accordion-item">
+                                                <h2 className="accordion-header">
+                                                    <button 
+                                                        className={`accordion-button ${hasAiConfig ? 'collapsed' : ''}`} 
+                                                        type="button" 
+                                                        data-bs-toggle="collapse" 
+                                                        data-bs-target="#aiConfig"
+                                                    >
+                                                        <div className="d-flex align-items-center w-100 me-3">
+                                                            <span className="material-icons me-2 small">smart_toy</span> 
+                                                            AI Settings
+                                                            {hasAiConfig && <span className="ms-auto badge bg-success bg-opacity-10 text-success border border-success border-opacity-10">Configured</span>}
+                                                        </div>
+                                                    </button>
+                                                </h2>
+                                                <div id="aiConfig" className={`accordion-collapse collapse ${!hasAiConfig ? 'show' : ''}`} data-bs-parent="#configAccordion">
+                                                    <div className="accordion-body bg-light bg-opacity-50">
+                                                        <form onSubmit={updateAiConfig}>
+                                                            <div className="mb-2">
+                                                                <label className="form-label small fw-bold text-muted">Provider</label>
+                                                                <select 
+                                                                    name="provider" 
+                                                                    className="form-select form-select-sm" 
+                                                                    defaultValue={aiConfig.provider}
+                                                                    onChange={(e) => setAiConfig({...aiConfig, provider: e.target.value})}
+                                                                >
+                                                                    <option value="gemini">Google Gemini</option>
+                                                                    <option value="openai">OpenAI / OpenRouter</option>
+                                                                    <option value="anthropic">Anthropic</option>
+                                                                    <option value="custom">Custom</option>
+                                                                </select>
+                                                            </div>
+                                                            <div className="mb-2">
+                                                                <label className="form-label small fw-bold text-muted">API Key</label>
+                                                                <input 
+                                                                    name="apiKey" 
+                                                                    defaultValue={aiConfig.apiKey} 
+                                                                    className="form-control form-control-sm" 
+                                                                    type="password"
+                                                                    placeholder="sk-..." 
+                                                                />
+                                                            </div>
+                                                            {(aiConfig.provider !== 'gemini') && (
+                                                                <>
+                                                                    <div className="mb-2">
+                                                                        <label className="form-label small fw-bold text-muted">Model ID</label>
+                                                                        <input name="model" defaultValue={aiConfig.model} className="form-control form-control-sm" placeholder="gpt-4o" />
+                                                                    </div>
+                                                                    <div className="mb-2">
+                                                                        <label className="form-label small fw-bold text-muted">Base URL</label>
+                                                                        <input name="baseUrl" defaultValue={aiConfig.baseUrl} className="form-control form-control-sm" placeholder="https://api..." />
+                                                                    </div>
+                                                                </>
+                                                            )}
+                                                            <button className="btn btn-primary btn-sm w-100 mt-2">Save AI Config</button>
+                                                        </form>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            {/* Add Account */}
+                                            <div className="accordion-item">
+                                                <h2 className="accordion-header">
+                                                    <button className="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#addAccount">
+                                                        <div className="d-flex align-items-center w-100 me-3">
+                                                            <span className="material-icons me-2 small">person_add</span> 
+                                                            Add Account
+                                                        </div>
+                                                    </button>
+                                                </h2>
+                                                <div id="addAccount" className="accordion-collapse collapse" data-bs-parent="#configAccordion">
+                                                    <div className="accordion-body bg-light bg-opacity-50">
+                                                        <form onSubmit={addMapping}>
+                                                            <div className="mb-2">
+                                                                <input name="owner" placeholder="Owner Name" className="form-control form-control-sm" required />
+                                                            </div>
+                                                            <div className="mb-2">
+                                                                <input name="twitterUsernames" placeholder="Twitter User(s)" className="form-control form-control-sm" required />
+                                                            </div>
+                                                            <div className="mb-2">
+                                                                <input name="bskyIdentifier" placeholder="Bluesky Handle" className="form-control form-control-sm" required />
+                                                            </div>
+                                                            <div className="mb-2">
+                                                                <input name="bskyPassword" type="password" placeholder="App Password" className="form-control form-control-sm" required />
+                                                            </div>
+                                                            <div className="mb-3">
+                                                                <input name="bskyServiceUrl" defaultValue="https://bsky.social" className="form-control form-control-sm" />
+                                                            </div>
+                                                            <button className="btn btn-success btn-sm w-100">Add Account</button>
+                                                        </form>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            )}
                         </div>
                     </div>
                     
@@ -650,37 +780,37 @@
                     {editingMapping && (
                         <div className="modal d-block" style={{backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(4px)'}} tabIndex="-1">
                           <div className="modal-dialog modal-dialog-centered">
-                            <div className="modal-content border-0 shadow">
-                              <div className="modal-header border-0 pb-0">
-                                <h5 className="modal-title">Edit Account</h5>
+                            <div className="modal-content border-0 shadow-lg" style={{borderRadius: '16px'}}>
+                              <div className="modal-header border-0 pb-0 pt-4 px-4">
+                                <h5 className="modal-title fw-bold">Edit Account</h5>
                                 <button type="button" className="btn-close" onClick={() => setEditingMapping(null)}></button>
                               </div>
-                              <div className="modal-body">
+                              <div className="modal-body p-4">
                                   <form onSubmit={updateMapping}>
                                         <div className="mb-3">
-                                            <label className="form-label small text-uppercase text-muted fw-bold">Owner</label>
+                                            <label className="form-label small text-muted fw-bold">Owner</label>
                                             <input name="owner" defaultValue={editingMapping.owner} className="form-control" required />
                                         </div>
                                         <div className="mb-3">
-                                            <label className="form-label small text-uppercase text-muted fw-bold">Twitter Usernames</label>
+                                            <label className="form-label small text-muted fw-bold">Twitter Usernames</label>
                                             <input name="twitterUsernames" defaultValue={editingMapping.twitterUsernames.join(', ')} className="form-control" required />
-                                            <div className="form-text">Comma separated list of handles</div>
+                                            <div className="form-text small">Comma separated list of handles</div>
                                         </div>
                                         <div className="mb-3">
-                                            <label className="form-label small text-uppercase text-muted fw-bold">Bluesky Handle</label>
+                                            <label className="form-label small text-muted fw-bold">Bluesky Handle</label>
                                             <input name="bskyIdentifier" defaultValue={editingMapping.bskyIdentifier} className="form-control" required />
                                         </div>
                                         <div className="mb-3">
-                                            <label className="form-label small text-uppercase text-muted fw-bold">New App Password</label>
+                                            <label className="form-label small text-muted fw-bold">New App Password</label>
                                             <input name="bskyPassword" type="password" className="form-control" placeholder="Leave blank to keep current" />
                                         </div>
                                         <div className="mb-4">
-                                            <label className="form-label small text-uppercase text-muted fw-bold">Service URL</label>
+                                            <label className="form-label small text-muted fw-bold">Service URL</label>
                                             <input name="bskyServiceUrl" defaultValue={editingMapping.bskyServiceUrl} className="form-control" />
                                         </div>
                                         <div className="d-grid gap-2">
                                             <button type="submit" className="btn btn-primary" disabled={loading}>{loading ? 'Saving...' : 'Save Changes'}</button>
-                                            <button type="button" className="btn btn-light text-muted" onClick={() => setEditingMapping(null)}>Cancel</button>
+                                            <button type="button" className="btn btn-light" onClick={() => setEditingMapping(null)}>Cancel</button>
                                         </div>
                                   </form>
                               </div>
