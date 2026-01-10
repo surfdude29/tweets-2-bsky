@@ -29,6 +29,7 @@ interface ProcessedTweetEntry {
   uri?: string;
   cid?: string;
   root?: { uri: string; cid: string };
+  tail?: { uri: string; cid: string };
   migrated?: boolean;
   skipped?: boolean;
   text?: string;
@@ -189,6 +190,8 @@ function saveProcessedTweet(twitterUsername: string, bskyIdentifier: string, twi
     bsky_cid: entry.cid,
     bsky_root_uri: entry.root?.uri,
     bsky_root_cid: entry.root?.cid,
+    bsky_tail_uri: entry.tail?.uri,
+    bsky_tail_cid: entry.tail?.cid,
     status: entry.migrated || (entry.uri && entry.cid) ? 'migrated' : (entry.skipped ? 'skipped' : 'failed')
   });
 }
@@ -720,27 +723,49 @@ function splitText(text: string, limit = 300): string[] {
   const chunks: string[] = [];
   let remaining = text;
 
+  // Reserve space for numbering like " (1/3)" -> approx 7 chars
+  // We apply this reservation to the limit check
+  const effectiveLimit = limit - 8;
+
   while (remaining.length > 0) {
     if (remaining.length <= limit) {
       chunks.push(remaining);
       break;
     }
 
-    // Try to split by paragraph
-    let splitIndex = remaining.lastIndexOf('\n\n', limit);
+    // Smart splitting priority:
+    // 1. Double newline (paragraph)
+    // 2. Sentence end (.!?)
+    // 3. Space
+    // 4. Force split
+
+    let splitIndex = -1;
+    
+    // Check paragraphs
+    let checkIndex = remaining.lastIndexOf('\n\n', effectiveLimit);
+    if (checkIndex !== -1) splitIndex = checkIndex;
+
+    // Check sentences
     if (splitIndex === -1) {
-      // Try to split by sentence
-      splitIndex = remaining.lastIndexOf('. ', limit);
-      if (splitIndex === -1) {
-        // Try to split by space
-        splitIndex = remaining.lastIndexOf(' ', limit);
-        if (splitIndex === -1) {
-          // Force split
-          splitIndex = limit;
+        // Look for punctuation followed by space
+        const sentenceMatches = Array.from(remaining.substring(0, effectiveLimit).matchAll(/[.!?]\s/g));
+        if (sentenceMatches.length > 0) {
+            const lastMatch = sentenceMatches[sentenceMatches.length - 1];
+            if (lastMatch && lastMatch.index !== undefined) {
+                splitIndex = lastMatch.index + 1; // Include punctuation
+            }
         }
-      } else {
-        splitIndex += 1; // Include the period
-      }
+    }
+
+    // Check spaces
+    if (splitIndex === -1) {
+        checkIndex = remaining.lastIndexOf(' ', effectiveLimit);
+        if (checkIndex !== -1) splitIndex = checkIndex;
+    }
+
+    // Force split if no good break point found
+    if (splitIndex === -1) {
+        splitIndex = effectiveLimit;
     }
 
     chunks.push(remaining.substring(0, splitIndex).trim());
@@ -884,7 +909,11 @@ async function processTweets(
   });
 
   const processedTweets = loadProcessedTweets(bskyIdentifier);
-  const toProcess = filteredTweets.filter((t) => !processedTweets[t.id_str || t.id || '']);
+  
+  // Maintain a local map that updates in real-time for intra-batch replies
+  const localProcessedMap: ProcessedTweetsMap = { ...processedTweets };
+
+  const toProcess = filteredTweets.filter((t) => !localProcessedMap[t.id_str || t.id || '']);
 
   if (toProcess.length === 0) {
     console.log(`[${twitterUsername}] ✅ No new tweets to process for ${bskyIdentifier}.`);
@@ -900,7 +929,7 @@ async function processTweets(
     const tweetId = tweet.id_str || tweet.id;
     if (!tweetId) continue;
 
-    if (processedTweets[tweetId]) continue;
+    if (localProcessedMap[tweetId]) continue;
 
     const isRetweet = tweet.isRetweet || tweet.retweeted_status_id_str || tweet.text?.startsWith('RT @');
 
@@ -909,6 +938,7 @@ async function processTweets(
       if (!dryRun) {
           // Save as skipped so we don't check it again
           saveProcessedTweet(twitterUsername, bskyIdentifier, tweetId, { skipped: true, text: tweet.text });
+          localProcessedMap[tweetId] = { skipped: true, text: tweet.text };
       }
       continue;
     }
@@ -930,13 +960,14 @@ async function processTweets(
     let replyParentInfo: ProcessedTweetEntry | null = null;
 
     if (isReply) {
-      if (replyStatusId && processedTweets[replyStatusId]) {
+      if (replyStatusId && localProcessedMap[replyStatusId]) {
         console.log(`[${twitterUsername}] 🧵 Threading reply to post in ${bskyIdentifier}: ${replyStatusId}`);
-        replyParentInfo = processedTweets[replyStatusId] ?? null;
+        replyParentInfo = localProcessedMap[replyStatusId] ?? null;
       } else {
         console.log(`[${twitterUsername}] ⏩ Skipping external/unknown reply.`);
         if (!dryRun) {
           saveProcessedTweet(twitterUsername, bskyIdentifier, tweetId, { skipped: true, text: tweetText });
+          localProcessedMap[tweetId] = { skipped: true, text: tweetText };
         }
         continue;
       }
@@ -1105,7 +1136,7 @@ async function processTweets(
 
     if (tweet.is_quote_status && tweet.quoted_status_id_str) {
       const quoteId = tweet.quoted_status_id_str;
-      const quoteRef = processedTweets[quoteId];
+      const quoteRef = localProcessedMap[quoteId];
       if (quoteRef && !quoteRef.migrated && quoteRef.uri && quoteRef.cid) {
         console.log(`[${twitterUsername}] 🔄 Found quoted tweet in local history. Natively embedding.`);
         quoteEmbed = { $type: 'app.bsky.embed.record', record: { uri: quoteRef.uri, cid: quoteRef.cid } };
@@ -1175,8 +1206,18 @@ async function processTweets(
     
     let lastPostInfo: ProcessedTweetEntry | null = replyParentInfo;
 
+    // We will save the first chunk as the "Root" of this tweet, and the last chunk as the "Tail".
+    let firstChunkInfo: { uri: string; cid: string; root?: { uri: string; cid: string } } | null = null;
+    let lastChunkInfo: { uri: string; cid: string; root?: { uri: string; cid: string } } | null = null;
+
     for (let i = 0; i < chunks.length; i++) {
-      const chunk = chunks[i] as string;
+      let chunk = chunks[i] as string;
+      
+      // Add (i/n) if split
+      if (chunks.length > 1) {
+          chunk += ` (${i + 1}/${chunks.length})`;
+      }
+
       console.log(`[${twitterUsername}] 📤 Posting chunk ${i + 1}/${chunks.length}...`);
       updateAppStatus({ message: `Posting chunk ${i + 1}/${chunks.length}...` });
       
@@ -1220,10 +1261,27 @@ async function processTweets(
         }
       }
 
+      // Threading logic
+      // Determine actual parent URI/CID to reply to
+      let parentRef: { uri: string; cid: string } | null = null;
+      let rootRef: { uri: string; cid: string } | null = null;
+
       if (lastPostInfo?.uri && lastPostInfo?.cid) {
+          // If this is the start of a new tweet (i=0), check if parent has a tail
+          if (i === 0 && lastPostInfo.tail) {
+              parentRef = lastPostInfo.tail;
+          } else {
+              // Otherwise (intra-tweet or parent has no tail), use the main uri/cid (which is the previous post/chunk)
+              parentRef = { uri: lastPostInfo.uri, cid: lastPostInfo.cid };
+          }
+          
+          rootRef = lastPostInfo.root || parentRef; // Propagate root, or use parent as root if none
+      }
+
+      if (parentRef && rootRef) {
         postRecord.reply = {
-          root: lastPostInfo.root || { uri: lastPostInfo.uri, cid: lastPostInfo.cid },
-          parent: { uri: lastPostInfo.uri, cid: lastPostInfo.cid },
+          root: rootRef,
+          parent: parentRef,
         };
       }
 
@@ -1251,18 +1309,19 @@ async function processTweets(
             }
         }
         
-                const currentPostInfo = {
-                  uri: response.uri,
-                  cid: response.cid,
-                  root: postRecord.reply ? postRecord.reply.root : { uri: response.uri, cid: response.cid },
-                  text: tweetText
-                };
+        const currentPostInfo = {
+            uri: response.uri,
+            cid: response.cid,
+            root: postRecord.reply ? postRecord.reply.root : { uri: response.uri, cid: response.cid },
+            // Text is just the current chunk text
+            text: chunk
+        };
         
-                if (i === 0) {
-                  saveProcessedTweet(twitterUsername, bskyIdentifier, tweetId, currentPostInfo);
-                }
-        
-                lastPostInfo = currentPostInfo;        console.log(`[${twitterUsername}] ✅ Chunk ${i + 1} posted successfully.`);
+        if (i === 0) firstChunkInfo = currentPostInfo;
+        lastChunkInfo = currentPostInfo;
+        lastPostInfo = currentPostInfo; // Update for next iteration
+
+        console.log(`[${twitterUsername}] ✅ Chunk ${i + 1} posted successfully.`);
         
         if (chunks.length > 1) {
           await new Promise((r) => setTimeout(r, 3000));
@@ -1271,6 +1330,22 @@ async function processTweets(
         console.error(`[${twitterUsername}] ❌ Failed to post ${tweetId} (chunk ${i + 1}):`, err);
         break;
       }
+    }
+    
+    // Save to DB and Map
+    if (firstChunkInfo && lastChunkInfo) {
+        const entry: ProcessedTweetEntry = {
+            uri: firstChunkInfo.uri,
+            cid: firstChunkInfo.cid,
+            root: firstChunkInfo.root,
+            tail: { uri: lastChunkInfo.uri, cid: lastChunkInfo.cid }, // Save tail!
+            text: tweetText
+        };
+        
+        if (!dryRun) {
+            saveProcessedTweet(twitterUsername, bskyIdentifier, tweetId, entry);
+            localProcessedMap[tweetId] = entry; // Update local map for subsequent replies in this batch
+        }
     }
     
     // Add a random delay between 5s and 15s to be more human-like
@@ -1320,7 +1395,7 @@ async function importHistory(twitterUsername: string, bskyIdentifier: string, li
           console.log("⚠️  Could not login to Bluesky, but proceeding with MOCK AGENT for Dry Run.");
           // biome-ignore lint/suspicious/noExplicitAny: mock agent
           agent = {
-              post: async (record: any) => ({ uri: 'at://mock/post', cid: 'mock-cid' }),
+              post: async (record: any) => ({ uri: 'at://did:plc:mock/app.bsky.feed.post/mock', cid: 'mock-cid' }),
               uploadBlob: async (data: any) => ({ data: { blob: { ref: { toString: () => 'mock-blob' } } } }),
               // Add other necessary methods if they are called outside of the already mocked dryRun blocks
               // But since we mocked the calls inside processTweets for dryRun, we just need the object to exist.

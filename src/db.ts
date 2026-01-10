@@ -23,8 +23,9 @@ if (tableInfo.length > 0) {
   let schemaChanged = false;
   const hasBskyIdentifier = tableInfo.some((col) => col.name === 'bsky_identifier');
   const hasTweetText = tableInfo.some((col) => col.name === 'tweet_text');
+  const hasTailUri = tableInfo.some((col) => col.name === 'bsky_tail_uri');
 
-  if (!hasBskyIdentifier || !hasTweetText) {
+  if (!hasBskyIdentifier || !hasTweetText || !hasTailUri) {
     console.log('🔄 Upgrading database schema...');
     
     // SQLite doesn't support easy PK changes, so we recreate the table if identifier is missing
@@ -47,6 +48,8 @@ if (tableInfo.length > 0) {
           bsky_cid TEXT,
           bsky_root_uri TEXT,
           bsky_root_cid TEXT,
+          bsky_tail_uri TEXT,
+          bsky_tail_cid TEXT,
           status TEXT NOT NULL,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
           PRIMARY KEY (twitter_id, bsky_identifier)
@@ -64,6 +67,9 @@ if (tableInfo.length > 0) {
       // If old table didn't have tweet_text, we default to NULL
       const textSelect = oldColumns.includes('tweet_text') ? 'tweet_text' : "NULL";
 
+      const tailUriSelect = oldColumns.includes('bsky_tail_uri') ? 'bsky_tail_uri' : "NULL";
+      const tailCidSelect = oldColumns.includes('bsky_tail_cid') ? 'bsky_tail_cid' : "NULL";
+
       db.exec(`
         INSERT INTO processed_tweets (
           twitter_id, 
@@ -73,7 +79,9 @@ if (tableInfo.length > 0) {
           bsky_uri, 
           bsky_cid, 
           bsky_root_uri, 
-          bsky_root_cid, 
+          bsky_root_cid,
+          bsky_tail_uri,
+          bsky_tail_cid, 
           status, 
           created_at
         )
@@ -85,7 +93,9 @@ if (tableInfo.length > 0) {
           bsky_uri, 
           bsky_cid, 
           bsky_root_uri, 
-          bsky_root_cid, 
+          bsky_root_cid,
+          ${tailUriSelect},
+          ${tailCidSelect}, 
           status, 
           created_at
         FROM processed_tweets_old;
@@ -108,6 +118,8 @@ if (tableInfo.length > 0) {
       bsky_cid TEXT,
       bsky_root_uri TEXT,
       bsky_root_cid TEXT,
+      bsky_tail_uri TEXT,
+      bsky_tail_cid TEXT,
       status TEXT NOT NULL, -- 'migrated', 'skipped', 'failed'
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (twitter_id, bsky_identifier)
@@ -129,6 +141,8 @@ export interface ProcessedTweet {
   bsky_cid?: string;
   bsky_root_uri?: string;
   bsky_root_cid?: string;
+  bsky_tail_uri?: string;
+  bsky_tail_cid?: string;
   status: 'migrated' | 'skipped' | 'failed';
   created_at?: string;
 }
@@ -147,6 +161,8 @@ export const dbService = {
       bsky_cid: row.bsky_cid,
       bsky_root_uri: row.bsky_root_uri,
       bsky_root_cid: row.bsky_root_cid,
+      bsky_tail_uri: row.bsky_tail_uri,
+      bsky_tail_cid: row.bsky_tail_cid,
       status: row.status,
       created_at: row.created_at
     };
@@ -155,8 +171,8 @@ export const dbService = {
   saveTweet(tweet: ProcessedTweet) {
     const stmt = db.prepare(`
       INSERT OR REPLACE INTO processed_tweets 
-      (twitter_id, twitter_username, bsky_identifier, tweet_text, bsky_uri, bsky_cid, bsky_root_uri, bsky_root_cid, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (twitter_id, twitter_username, bsky_identifier, tweet_text, bsky_uri, bsky_cid, bsky_root_uri, bsky_root_cid, bsky_tail_uri, bsky_tail_cid, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     stmt.run(
       tweet.twitter_id,
@@ -167,6 +183,8 @@ export const dbService = {
       tweet.bsky_cid || null,
       tweet.bsky_root_uri || null,
       tweet.bsky_root_cid || null,
+      tweet.bsky_tail_uri || null,
+      tweet.bsky_tail_cid || null,
       tweet.status,
     );
   },
@@ -180,6 +198,7 @@ export const dbService = {
         uri: row.bsky_uri,
         cid: row.bsky_cid,
         root: row.bsky_root_uri ? { uri: row.bsky_root_uri, cid: row.bsky_root_cid } : undefined,
+        tail: (row.bsky_tail_uri && row.bsky_tail_cid) ? { uri: row.bsky_tail_uri, cid: row.bsky_tail_cid } : undefined,
         migrated: row.status === 'migrated',
         skipped: row.status === 'skipped',
       };
@@ -196,6 +215,7 @@ export const dbService = {
         uri: row.bsky_uri,
         cid: row.bsky_cid,
         root: row.bsky_root_uri ? { uri: row.bsky_root_uri, cid: row.bsky_root_cid } : undefined,
+        tail: (row.bsky_tail_uri && row.bsky_tail_cid) ? { uri: row.bsky_tail_uri, cid: row.bsky_tail_cid } : undefined,
         migrated: row.status === 'migrated',
         skipped: row.status === 'skipped'
       };
