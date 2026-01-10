@@ -1188,6 +1188,19 @@ async function processTweets(
         if (potentialLinks.length > 0) {
             const linkToEmbed = potentialLinks[potentialLinks.length - 1];
             if (linkToEmbed) {
+                // Optimization: If text is too long, but removing the link makes it fit, do it!
+                // The link will be present in the embed card anyway.
+                if (text.length > 300 && text.includes(linkToEmbed)) {
+                    const lengthWithoutLink = text.length - linkToEmbed.length;
+                    // Allow some buffer (e.g. whitespace cleanup might save 1-2 chars)
+                    if (lengthWithoutLink <= 300) {
+                        console.log(`[${twitterUsername}] 📏 Optimizing: Removing link ${linkToEmbed} from text to avoid threading (Card will embed it).`);
+                        text = text.replace(linkToEmbed, '').trim();
+                        // Clean up potential double punctuation/spaces left behind
+                        text = text.replace(/\s\.$/, '.').replace(/\s\s+/g, ' ');
+                    }
+                }
+
                 console.log(`[${twitterUsername}] 🃏 Fetching link card for: ${linkToEmbed}`);
                 linkCard = await fetchEmbedUrlCard(agent, linkToEmbed);
             }

@@ -285,8 +285,7 @@ app.post('/api/backfill/:id', authenticateToken, requireAdmin, (req, res) => {
     pendingBackfills.push({ id, limit: limit ? Number(limit) : undefined });
   }
 
-  lastCheckTime = 0;
-  nextCheckTime = Date.now() + 1000;
+  // Do not force a global run; the scheduler loop will pick up the pending backfill in ~5s
   res.json({ success: true, message: `Backfill queued for @${mapping.twitterUsernames.join(', ')}` });
 });
 
