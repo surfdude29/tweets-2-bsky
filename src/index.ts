@@ -823,6 +823,8 @@ async function fetchUserTweets(username: string, limit: number, processedIds?: S
       return [];
     }
   }
+  
+  console.log(`[${username}] ⚠️ Scraper returned 0 tweets (or failed silently) after retries.`);
   return [];
 }
 
@@ -1151,12 +1153,18 @@ async function processTweets(
       await rt.detectFacets(agent);
       const detectedLangs = detectLanguage(chunk);
 
+      // Add offset for split chunks to ensure correct ordering/threading
+      let postDate = tweet.created_at ? new Date(tweet.created_at) : new Date();
+      if (i > 0) {
+        postDate = new Date(postDate.getTime() + i * 1000);
+      }
+
       // biome-ignore lint/suspicious/noExplicitAny: dynamic record construction
       const postRecord: Record<string, any> = {
         text: rt.text,
         facets: rt.facets,
         langs: detectedLangs,
-        createdAt: tweet.created_at ? new Date(tweet.created_at).toISOString() : new Date().toISOString(),
+        createdAt: postDate.toISOString(),
       };
 
       if (i === 0) {
@@ -1377,13 +1385,19 @@ async function runAccountTask(mapping: AccountMapping, forceBackfill = false, dr
 
                 for (const twitterUsername of mapping.twitterUsernames) {
                     try {
+                        console.log(`[${twitterUsername}] 🏁 Starting check for new tweets...`);
                         updateAppStatus({ state: 'checking', currentAccount: twitterUsername, message: 'Fetching latest tweets...' });
                         
                         // Use fetchUserTweets with early stopping optimization
                         // Increase limit slightly since we have early stopping now
                         const tweets = await fetchUserTweets(twitterUsername, 50, processedIds);
                         
-                        if (!tweets || tweets.length === 0) continue;
+                        if (!tweets || tweets.length === 0) {
+                            console.log(`[${twitterUsername}] ℹ️ No tweets found (or fetch failed).`);
+                            continue;
+                        }
+                        
+                        console.log(`[${twitterUsername}] 📥 Fetched ${tweets.length} tweets.`);
                         await processTweets(agent, twitterUsername, mapping.bskyIdentifier, tweets, dryRun);
                     } catch (err) {
                         console.error(`❌ Error checking ${twitterUsername}:`, err);
