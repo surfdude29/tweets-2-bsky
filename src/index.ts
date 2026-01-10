@@ -316,7 +316,7 @@ function detectLanguage(text: string): string[] {
 async function expandUrl(shortUrl: string): Promise<string> {
   try {
     const response = await axios.head(shortUrl, {
-      maxRedirects: 10,
+      maxRedirects: 5,
       validateStatus: (status) => status >= 200 && status < 400,
     });
     // biome-ignore lint/suspicious/noExplicitAny: axios internal types
@@ -325,12 +325,16 @@ async function expandUrl(shortUrl: string): Promise<string> {
     try {
       const response = await axios.get(shortUrl, {
         responseType: 'stream',
-        maxRedirects: 10,
+        maxRedirects: 5,
       });
       response.data.destroy();
       // biome-ignore lint/suspicious/noExplicitAny: axios internal types
       return (response.request as any)?.res?.responseUrl || shortUrl;
-    } catch {
+    } catch (e: any) {
+      if (e.code === 'ERR_FR_TOO_MANY_REDIRECTS' || e.response?.status === 403 || e.response?.status === 401) {
+         // Silent fallback for common expansion issues (redirect loops, login walls)
+         return shortUrl;
+      }
       return shortUrl;
     }
   }
@@ -570,6 +574,7 @@ async function fetchEmbedUrlCard(agent: BskyAgent, url: string): Promise<any> {
         'Accept-Language': 'en-US,en;q=0.9',
       },
       timeout: 10000,
+      maxRedirects: 5,
     });
     
     const $ = cheerio.load(response.data);
@@ -587,7 +592,7 @@ async function fetchEmbedUrlCard(agent: BskyAgent, url: string): Promise<any> {
             const { buffer, mimeType } = await downloadMedia(imageUrl);
             thumbBlob = await uploadToBluesky(agent, buffer, mimeType);
         } catch (e) {
-            console.warn(`Failed to upload thumbnail for ${url}:`, e);
+            // SIlently fail thumbnail upload
         }
     }
 
@@ -608,8 +613,12 @@ async function fetchEmbedUrlCard(agent: BskyAgent, url: string): Promise<any> {
         external,
     };
 
-  } catch (err) {
-    console.warn(`Failed to fetch embed card for ${url}:`, err);
+  } catch (err: any) {
+    if (err.code === 'ERR_FR_TOO_MANY_REDIRECTS') {
+        // Ignore redirect loops
+        return null;
+    }
+    console.warn(`Failed to fetch embed card for ${url}:`, err.message || err);
     return null;
   }
 }
@@ -662,10 +671,17 @@ async function uploadVideoToBluesky(agent: BskyAgent, buffer: Buffer, filename: 
 
     if (!uploadResponse.ok) {
       const errorText = await uploadResponse.text();
-      console.error(`[VIDEO] ❌ Server responded with ${uploadResponse.status}: ${errorText}`);
 
+      // Handle specific error cases
       try {
         const errorJson = JSON.parse(errorText);
+        
+        // Handle server overload gracefully
+        if (uploadResponse.status === 503 || errorJson.error === "Server does not have enough capacity to handle uploads") {
+            console.warn(`[VIDEO] ⚠️ Server overloaded (503). Skipping video upload and falling back to link.`);
+            throw new Error("VIDEO_FALLBACK_503");
+        }
+
         if (errorJson.error === "already_exists" && errorJson.jobId) {
           console.log(`[VIDEO] ♻️ Video already exists. Resuming with Job ID: ${errorJson.jobId}`);
           return await pollForVideoProcessing(agent, errorJson.jobId);
@@ -675,9 +691,11 @@ async function uploadVideoToBluesky(agent: BskyAgent, buffer: Buffer, filename: 
             throw new Error("Bluesky Email Unconfirmed - Video Upload Rejected");
         }
       } catch (e) {
-        // Not JSON or missing fields, proceed with throwing
+         if ((e as Error).message === "VIDEO_FALLBACK_503") throw e;
+         // Not JSON or missing fields, proceed with throwing original error
       }
-
+      
+      console.error(`[VIDEO] ❌ Server responded with ${uploadResponse.status}: ${errorText}`);
       throw new Error(`Video upload failed: ${uploadResponse.status} ${errorText}`);
     }
 
@@ -803,6 +821,16 @@ async function fetchUserTweets(username: string, limit: number, processedIds?: S
       retries--;
       const isRetryable = e.message?.includes('ServiceUnavailable') || e.message?.includes('Timeout') || e.message?.includes('429') || e.message?.includes('401');
       
+      // Check for Twitter Internal Server Error (often returns 400 with specific body)
+      if (e?.response?.status === 400 && JSON.stringify(e?.response?.data || {}).includes('InternalServerError')) {
+         console.warn(`⚠️ Twitter Internal Server Error (Transient) for ${username}.`);
+         // Treat as retryable
+         if (retries > 0) {
+            await new Promise(r => setTimeout(r, 5000));
+            continue;
+         }
+      }
+
       if (isRetryable) {
         console.warn(`⚠️ Error fetching tweets for ${username} (${e.message}).`);
         
@@ -819,7 +847,7 @@ async function fetchUserTweets(username: string, limit: number, processedIds?: S
         }
       }
       
-      console.warn(`Error fetching tweets for ${username}:`, e);
+      console.warn(`Error fetching tweets for ${username}:`, e.message || e);
       return [];
     }
   }
@@ -1054,7 +1082,10 @@ async function processTweets(
               const tweetUrl = `https://twitter.com/${twitterUsername}/status/${tweetId}`;
               if (!text.includes(tweetUrl)) text += `\n\nVideo: ${tweetUrl}`;
             } catch (err) {
-              console.error(`[${twitterUsername}] ❌ Failed video upload flow:`, (err as Error).message);
+              const errMsg = (err as Error).message;
+              if (errMsg !== "VIDEO_FALLBACK_503") {
+                  console.error(`[${twitterUsername}] ❌ Failed video upload flow:`, errMsg);
+              }
               const tweetUrl = `https://twitter.com/${twitterUsername}/status/${tweetId}`;
               if (!text.includes(tweetUrl)) text += `\n\nVideo: ${tweetUrl}`;
             }
