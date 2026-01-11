@@ -1339,7 +1339,7 @@ async function processTweets(
               parentRef = { uri: lastPostInfo.uri, cid: lastPostInfo.cid };
           }
           
-          rootRef = lastPostInfo.root || parentRef; // Propagate root, or use parent as root if none
+          rootRef = lastPostInfo.root || { uri: lastPostInfo.uri, cid: lastPostInfo.cid };
       }
 
       if (parentRef && rootRef) {
