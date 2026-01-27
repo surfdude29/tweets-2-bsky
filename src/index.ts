@@ -1075,6 +1075,58 @@ function splitText(text: string, limit = 300): string[] {
   return chunks;
 }
 
+function utf16IndexToUtf8Index(text: string, index: number): number {
+  return Buffer.byteLength(text.slice(0, index), 'utf8');
+}
+
+function rangesOverlap(startA: number, endA: number, startB: number, endB: number): boolean {
+  return startA < endB && startB < endA;
+}
+
+function addTwitterHandleLinkFacets(text: string, facets?: any[]): any[] | undefined {
+  const existingFacets = facets ?? [];
+  const newFacets: any[] = [];
+  const regex = /@([A-Za-z0-9_]{1,15})/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = regex.exec(text))) {
+    const handle = match[1];
+    if (!handle) continue;
+
+    const atIndex = match.index;
+    const prevChar = atIndex > 0 ? text[atIndex - 1] : '';
+    if (prevChar && /[A-Za-z0-9_]/.test(prevChar)) continue;
+
+    const endIndex = atIndex + handle.length + 1;
+    const trailing = text.slice(endIndex);
+    if (trailing.startsWith('.') && /^\.[A-Za-z0-9-]+/.test(trailing)) continue;
+
+    const nextChar = endIndex < text.length ? text[endIndex] : '';
+    if (nextChar && /[A-Za-z0-9_]/.test(nextChar)) continue;
+
+    const byteStart = utf16IndexToUtf8Index(text, atIndex);
+    const byteEnd = utf16IndexToUtf8Index(text, endIndex);
+
+    const overlaps = existingFacets.some((facet) =>
+      rangesOverlap(byteStart, byteEnd, facet.index.byteStart, facet.index.byteEnd),
+    );
+    if (overlaps) continue;
+
+    newFacets.push({
+      index: { byteStart, byteEnd },
+      features: [
+        {
+          $type: 'app.bsky.richtext.facet#link',
+          uri: `https://twitter.com/${handle}`,
+        },
+      ],
+    });
+  }
+
+  if (newFacets.length === 0) return facets;
+  return [...existingFacets, ...newFacets].sort((a, b) => a.index.byteStart - b.index.byteStart);
+}
+
 // Simple p-limit implementation for concurrency control
 const pLimit = (concurrency: number) => {
   const queue: (() => Promise<void>)[] = [];
@@ -1670,6 +1722,7 @@ async function processTweets(
 
       const rt = new RichText({ text: chunk });
       await rt.detectFacets(agent);
+      rt.facets = addTwitterHandleLinkFacets(rt.text, rt.facets);
       const detectedLangs = detectLanguage(chunk);
 
       // Add offset for split chunks to ensure correct ordering/threading
