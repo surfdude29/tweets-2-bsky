@@ -1474,8 +1474,6 @@ async function processTweets(
 
     // Removed early dryRun continue to allow verifying logic
 
-    const altTextContext = buildAltTextContext(tweet, tweetText, tweetMap);
-
     let text = tweetText
       .replace(/&amp;/g, '&')
       .replace(/&lt;/g, '<')
@@ -1570,6 +1568,7 @@ async function processTweets(
           if (!altText) {
             console.log(`[${twitterUsername}] 🤖 Generating alt text via Gemini...`);
             // Use original tweet text for context, not the modified/cleaned one
+            const altTextContext = buildAltTextContext(tweet, tweetText, tweetMap);
             altText = await generateAltText(buffer, mimeType, altTextContext);
             if (altText) console.log(`[${twitterUsername}] ✅ Alt text generated: ${altText.substring(0, 50)}...`);
           }

@@ -47,19 +47,25 @@ export async function generateAltText(
     switch (provider) {
       case 'gemini':
         // apiKey is guaranteed by check above
-        return await callGemini(apiKey!, model || 'models/gemini-2.5-flash', buffer, mimeType, prompt);
+        return normalizeAltTextOutput(
+          await callGemini(apiKey!, model || 'models/gemini-2.5-flash', buffer, mimeType, prompt),
+        );
       case 'openai':
       case 'custom':
-        return await callOpenAICompatible(apiKey, model || 'gpt-4o', baseUrl, buffer, mimeType, prompt);
+        return normalizeAltTextOutput(
+          await callOpenAICompatible(apiKey, model || 'gpt-4o', baseUrl, buffer, mimeType, prompt),
+        );
       case 'anthropic':
         // apiKey is guaranteed by check above
-        return await callAnthropic(
-          apiKey!,
-          model || 'claude-3-5-sonnet-20241022',
-          baseUrl,
-          buffer,
-          mimeType,
-          prompt,
+        return normalizeAltTextOutput(
+          await callAnthropic(
+            apiKey!,
+            model || 'claude-3-5-sonnet-20241022',
+            baseUrl,
+            buffer,
+            mimeType,
+            prompt,
+          ),
         );
       default:
         console.warn(`[AI] ⚠️ Unknown provider: ${provider}`);
@@ -84,10 +90,30 @@ function buildAltTextPrompt(contextText: string): string {
     'Write one alt text description (1-2 sentences).',
     'Describe only what is visible.',
     'Use context to identify people/places/objects if relevant for search.',
+    'Describe only this image; ignore other images in the post.',
     'Return only the alt text with no labels, quotes, or options.',
     'No hashtags or emojis.',
     `Context: "${trimmed}"`,
   ].join(' ');
+}
+
+function normalizeAltTextOutput(output: string | undefined): string | undefined {
+  if (!output) return undefined;
+
+  let cleaned = output.trim();
+  if (!cleaned) return undefined;
+
+  cleaned = cleaned.replace(/^["'“”]+|["'“”]+$/g, '').trim();
+  cleaned = cleaned.replace(/^(alt\s*text|description)\s*[:\-]\s*/i, '').trim();
+
+  const lines = cleaned.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (lines.length > 0) cleaned = lines[0];
+
+  cleaned = cleaned.replace(/^option\s*\d+\s*[:\-]\s*/i, '').trim();
+  cleaned = cleaned.replace(/^[\-\*\d\.\)]+\s*/g, '').trim();
+  cleaned = cleaned.replace(/\s+/g, ' ').trim();
+
+  return cleaned || undefined;
 }
 
 async function callGemini(
