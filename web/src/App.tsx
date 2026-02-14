@@ -3,14 +3,22 @@ import {
   AlertTriangle,
   ArrowUpRight,
   Bot,
+  ChevronDown,
   Clock3,
   Download,
+  Folder,
+  Heart,
   History,
+  LayoutDashboard,
   Loader2,
   LogOut,
+  MessageCircle,
   Moon,
+  Newspaper,
   Play,
   Plus,
+  Quote,
+  Repeat2,
   Save,
   Settings2,
   Sun,
@@ -18,6 +26,7 @@ import {
   Trash2,
   Upload,
   UserRound,
+  Users,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Badge } from './components/ui/badge';
@@ -29,6 +38,7 @@ import { cn } from './lib/utils';
 
 type ThemeMode = 'system' | 'light' | 'dark';
 type AuthView = 'login' | 'register';
+type DashboardTab = 'overview' | 'accounts' | 'posts' | 'activity' | 'settings';
 
 type AppState = 'idle' | 'checking' | 'backfilling' | 'pacing' | 'processing';
 
@@ -40,6 +50,8 @@ interface AccountMapping {
   bskyServiceUrl?: string;
   enabled: boolean;
   owner?: string;
+  groupName?: string;
+  groupEmoji?: string;
 }
 
 interface TwitterConfig {
@@ -64,6 +76,76 @@ interface ActivityLog {
   bsky_uri?: string;
   status: 'migrated' | 'skipped' | 'failed';
   created_at?: string;
+}
+
+interface BskyFacetFeatureLink {
+  $type: 'app.bsky.richtext.facet#link';
+  uri: string;
+}
+
+interface BskyFacetFeatureMention {
+  $type: 'app.bsky.richtext.facet#mention';
+  did: string;
+}
+
+interface BskyFacetFeatureTag {
+  $type: 'app.bsky.richtext.facet#tag';
+  tag: string;
+}
+
+type BskyFacetFeature = BskyFacetFeatureLink | BskyFacetFeatureMention | BskyFacetFeatureTag;
+
+interface BskyFacet {
+  index?: {
+    byteStart?: number;
+    byteEnd?: number;
+  };
+  features?: BskyFacetFeature[];
+}
+
+interface EnrichedPostMedia {
+  type: 'image' | 'video' | 'external';
+  url?: string;
+  thumb?: string;
+  alt?: string;
+  width?: number;
+  height?: number;
+  title?: string;
+  description?: string;
+}
+
+interface EnrichedPost {
+  bskyUri: string;
+  bskyCid?: string;
+  bskyIdentifier: string;
+  twitterId: string;
+  twitterUsername: string;
+  twitterUrl?: string;
+  postUrl?: string;
+  createdAt?: string;
+  text: string;
+  facets: BskyFacet[];
+  author: {
+    did?: string;
+    handle: string;
+    displayName?: string;
+    avatar?: string;
+  };
+  stats: {
+    likes: number;
+    reposts: number;
+    replies: number;
+    quotes: number;
+    engagement: number;
+  };
+  media: EnrichedPostMedia[];
+}
+
+interface BskyProfileView {
+  did?: string;
+  handle?: string;
+  displayName?: string;
+  avatar?: string;
 }
 
 interface PendingBackfill {
@@ -107,19 +189,24 @@ interface Notice {
 
 interface MappingFormState {
   owner: string;
-  twitterUsernames: string;
   bskyIdentifier: string;
   bskyPassword: string;
   bskyServiceUrl: string;
+  groupName: string;
+  groupEmoji: string;
 }
 
 const defaultMappingForm = (): MappingFormState => ({
   owner: '',
-  twitterUsernames: '',
   bskyIdentifier: '',
   bskyPassword: '',
   bskyServiceUrl: 'https://bsky.social',
+  groupName: '',
+  groupEmoji: '📁',
 });
+
+const DEFAULT_GROUP_NAME = 'Ungrouped';
+const DEFAULT_GROUP_EMOJI = '📁';
 
 const selectClassName =
   'flex h-10 w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2';
@@ -165,6 +252,118 @@ function getBskyPostUrl(activity: ActivityLog): string | null {
   return `https://bsky.app/profile/${activity.bsky_identifier}/post/${postId}`;
 }
 
+function normalizeTwitterUsername(value: string): string {
+  return value.trim().replace(/^@/, '').toLowerCase();
+}
+
+function normalizeGroupName(value?: string): string {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  return trimmed || DEFAULT_GROUP_NAME;
+}
+
+function normalizeGroupEmoji(value?: string): string {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  return trimmed || DEFAULT_GROUP_EMOJI;
+}
+
+function getMappingGroupMeta(mapping?: Pick<AccountMapping, 'groupName' | 'groupEmoji'>) {
+  const name = normalizeGroupName(mapping?.groupName);
+  const emoji = normalizeGroupEmoji(mapping?.groupEmoji);
+  const key = `${name.toLowerCase()}::${emoji}`;
+  return { key, name, emoji };
+}
+
+function getTwitterPostUrl(twitterUsername?: string, twitterId?: string): string | undefined {
+  if (!twitterUsername || !twitterId) {
+    return undefined;
+  }
+  return `https://x.com/${normalizeTwitterUsername(twitterUsername)}/status/${twitterId}`;
+}
+
+function addTwitterUsernames(current: string[], value: string): string[] {
+  const candidates = value
+    .split(/[\s,]+/)
+    .map(normalizeTwitterUsername)
+    .filter((username) => username.length > 0);
+  if (candidates.length === 0) {
+    return current;
+  }
+
+  const seen = new Set(current.map(normalizeTwitterUsername));
+  const next = [...current];
+  for (const candidate of candidates) {
+    if (seen.has(candidate)) {
+      continue;
+    }
+    seen.add(candidate);
+    next.push(candidate);
+  }
+
+  return next;
+}
+
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
+const compactNumberFormatter = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 });
+
+type FacetSegment =
+  | { type: 'text'; text: string }
+  | { type: 'link'; text: string; href: string }
+  | { type: 'mention'; text: string; href: string }
+  | { type: 'tag'; text: string; href: string };
+
+function sliceByBytes(bytes: Uint8Array, start: number, end: number): string {
+  return textDecoder.decode(bytes.slice(start, end));
+}
+
+function buildFacetSegments(text: string, facets: BskyFacet[]): FacetSegment[] {
+  const bytes = textEncoder.encode(text);
+  const sortedFacets = [...facets].sort((a, b) => (a.index?.byteStart || 0) - (b.index?.byteStart || 0));
+  const segments: FacetSegment[] = [];
+  let cursor = 0;
+
+  for (const facet of sortedFacets) {
+    const start = Number(facet.index?.byteStart);
+    const end = Number(facet.index?.byteEnd);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+    if (start < cursor || end <= start || end > bytes.length) continue;
+
+    if (start > cursor) {
+      segments.push({ type: 'text', text: sliceByBytes(bytes, cursor, start) });
+    }
+
+    const rawText = sliceByBytes(bytes, start, end);
+    const feature = facet.features?.[0];
+    if (!feature) {
+      segments.push({ type: 'text', text: rawText });
+    } else if (feature.$type === 'app.bsky.richtext.facet#link' && feature.uri) {
+      segments.push({ type: 'link', text: rawText, href: feature.uri });
+    } else if (feature.$type === 'app.bsky.richtext.facet#mention' && feature.did) {
+      segments.push({ type: 'mention', text: rawText, href: `https://bsky.app/profile/${feature.did}` });
+    } else if (feature.$type === 'app.bsky.richtext.facet#tag' && feature.tag) {
+      segments.push({ type: 'tag', text: rawText, href: `https://bsky.app/hashtag/${encodeURIComponent(feature.tag)}` });
+    } else {
+      segments.push({ type: 'text', text: rawText });
+    }
+
+    cursor = end;
+  }
+
+  if (cursor < bytes.length) {
+    segments.push({ type: 'text', text: sliceByBytes(bytes, cursor, bytes.length) });
+  }
+
+  if (segments.length === 0) {
+    return [{ type: 'text', text }];
+  }
+
+  return segments;
+}
+
+function formatCompactNumber(value: number): string {
+  return compactNumberFormatter.format(Math.max(0, value));
+}
+
 function App() {
   const [token, setToken] = useState<string | null>(() => localStorage.getItem('token'));
   const [authView, setAuthView] = useState<AuthView>('login');
@@ -178,16 +377,47 @@ function App() {
   const [resolvedTheme, setResolvedTheme] = useState<'light' | 'dark'>('light');
 
   const [mappings, setMappings] = useState<AccountMapping[]>([]);
+  const [enrichedPosts, setEnrichedPosts] = useState<EnrichedPost[]>([]);
+  const [profilesByActor, setProfilesByActor] = useState<Record<string, BskyProfileView>>({});
   const [twitterConfig, setTwitterConfig] = useState<TwitterConfig>({ authToken: '', ct0: '' });
   const [aiConfig, setAiConfig] = useState<AIConfig>({ provider: 'gemini', apiKey: '', model: '', baseUrl: '' });
   const [recentActivity, setRecentActivity] = useState<ActivityLog[]>([]);
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [countdown, setCountdown] = useState('--');
+  const [activeTab, setActiveTab] = useState<DashboardTab>(() => {
+    const saved = localStorage.getItem('dashboard-tab');
+    if (
+      saved === 'overview' ||
+      saved === 'accounts' ||
+      saved === 'posts' ||
+      saved === 'activity' ||
+      saved === 'settings'
+    ) {
+      return saved;
+    }
+    return 'overview';
+  });
 
   const [me, setMe] = useState<AuthUser | null>(null);
   const [editingMapping, setEditingMapping] = useState<AccountMapping | null>(null);
   const [newMapping, setNewMapping] = useState<MappingFormState>(defaultMappingForm);
+  const [newTwitterUsers, setNewTwitterUsers] = useState<string[]>([]);
+  const [newTwitterInput, setNewTwitterInput] = useState('');
   const [editForm, setEditForm] = useState<MappingFormState>(defaultMappingForm);
+  const [editTwitterUsers, setEditTwitterUsers] = useState<string[]>([]);
+  const [editTwitterInput, setEditTwitterInput] = useState('');
+  const [collapsedGroupKeys, setCollapsedGroupKeys] = useState<Record<string, boolean>>(() => {
+    const raw = localStorage.getItem('accounts-collapsed-groups');
+    if (!raw) return {};
+    try {
+      const parsed = JSON.parse(raw) as Record<string, boolean>;
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
+  });
+  const [postsGroupFilter, setPostsGroupFilter] = useState('all');
+  const [activityGroupFilter, setActivityGroupFilter] = useState('all');
   const [notice, setNotice] = useState<Notice | null>(null);
 
   const [isBusy, setIsBusy] = useState(false);
@@ -214,9 +444,13 @@ function App() {
     setToken(null);
     setMe(null);
     setMappings([]);
+    setEnrichedPosts([]);
+    setProfilesByActor({});
     setStatus(null);
     setRecentActivity([]);
     setEditingMapping(null);
+    setNewTwitterUsers([]);
+    setEditTwitterUsers([]);
     setAuthView('login');
   }, []);
 
@@ -257,6 +491,45 @@ function App() {
     }
   }, [authHeaders, handleAuthFailure]);
 
+  const fetchEnrichedPosts = useCallback(async () => {
+    if (!authHeaders) {
+      return;
+    }
+
+    try {
+      const response = await axios.get<EnrichedPost[]>('/api/posts/enriched?limit=36', { headers: authHeaders });
+      setEnrichedPosts(response.data);
+    } catch (error) {
+      handleAuthFailure(error, 'Failed to fetch Bluesky posts.');
+    }
+  }, [authHeaders, handleAuthFailure]);
+
+  const fetchProfiles = useCallback(
+    async (actors: string[]) => {
+      if (!authHeaders) {
+        return;
+      }
+
+      const normalizedActors = [...new Set(actors.map(normalizeTwitterUsername).filter((actor) => actor.length > 0))];
+      if (normalizedActors.length === 0) {
+        setProfilesByActor({});
+        return;
+      }
+
+      try {
+        const response = await axios.post<Record<string, BskyProfileView>>(
+          '/api/bsky/profiles',
+          { actors: normalizedActors },
+          { headers: authHeaders },
+        );
+        setProfilesByActor(response.data || {});
+      } catch (error) {
+        handleAuthFailure(error, 'Failed to resolve Bluesky profiles.');
+      }
+    },
+    [authHeaders, handleAuthFailure],
+  );
+
   const fetchData = useCallback(async () => {
     if (!authHeaders) {
       return;
@@ -269,8 +542,9 @@ function App() {
       ]);
 
       const profile = meResponse.data;
+      const mappingData = mappingsResponse.data;
       setMe(profile);
-      setMappings(mappingsResponse.data);
+      setMappings(mappingData);
 
       if (profile.isAdmin) {
         const [twitterResponse, aiResponse] = await Promise.all([
@@ -293,15 +567,30 @@ function App() {
         });
       }
 
-      await Promise.all([fetchStatus(), fetchRecentActivity()]);
+      await Promise.all([fetchStatus(), fetchRecentActivity(), fetchEnrichedPosts()]);
+      await fetchProfiles(mappingData.map((mapping) => mapping.bskyIdentifier));
     } catch (error) {
       handleAuthFailure(error, 'Failed to load dashboard data.');
     }
-  }, [authHeaders, fetchRecentActivity, fetchStatus, handleAuthFailure]);
+  }, [authHeaders, fetchEnrichedPosts, fetchProfiles, fetchRecentActivity, fetchStatus, handleAuthFailure]);
 
   useEffect(() => {
     localStorage.setItem('theme-mode', themeMode);
   }, [themeMode]);
+
+  useEffect(() => {
+    localStorage.setItem('dashboard-tab', activeTab);
+  }, [activeTab]);
+
+  useEffect(() => {
+    localStorage.setItem('accounts-collapsed-groups', JSON.stringify(collapsedGroupKeys));
+  }, [collapsedGroupKeys]);
+
+  useEffect(() => {
+    if (!isAdmin && activeTab === 'settings') {
+      setActiveTab('overview');
+    }
+  }, [activeTab, isAdmin]);
 
   useEffect(() => {
     const media = window.matchMedia('(prefers-color-scheme: dark)');
@@ -342,11 +631,16 @@ function App() {
       void fetchRecentActivity();
     }, 7000);
 
+    const postsInterval = window.setInterval(() => {
+      void fetchEnrichedPosts();
+    }, 12000);
+
     return () => {
       window.clearInterval(statusInterval);
       window.clearInterval(activityInterval);
+      window.clearInterval(postsInterval);
     };
-  }, [token, fetchRecentActivity, fetchStatus]);
+  }, [token, fetchEnrichedPosts, fetchRecentActivity, fetchStatus]);
 
   useEffect(() => {
     if (!status?.nextCheckTime) {
@@ -384,13 +678,143 @@ function App() {
 
   const pendingBackfills = status?.pendingBackfills ?? [];
   const currentStatus = status?.currentStatus;
-  const postedActivity = useMemo(
+  const latestActivity = recentActivity[0];
+  const dashboardTabs = useMemo(
     () =>
-      recentActivity
-        .filter((activity) => activity.status === 'migrated' && Boolean(getBskyPostUrl(activity)))
-        .slice(0, 12),
-    [recentActivity],
+      [
+        { id: 'overview' as DashboardTab, label: 'Overview', icon: LayoutDashboard },
+        { id: 'accounts' as DashboardTab, label: 'Accounts', icon: Users },
+        { id: 'posts' as DashboardTab, label: 'Posts', icon: Newspaper },
+        { id: 'activity' as DashboardTab, label: 'Activity', icon: History },
+        { id: 'settings' as DashboardTab, label: 'Settings', icon: Settings2, adminOnly: true },
+      ].filter((tab) => (tab.adminOnly ? isAdmin : true)),
+    [isAdmin],
   );
+  const postedActivity = useMemo(
+    () => enrichedPosts.slice(0, 12),
+    [enrichedPosts],
+  );
+  const engagementByAccount = useMemo(() => {
+    const map = new Map<string, { identifier: string; score: number; posts: number }>();
+    for (const post of enrichedPosts) {
+      const key = normalizeTwitterUsername(post.bskyIdentifier);
+      const existing = map.get(key) || {
+        identifier: post.bskyIdentifier,
+        score: 0,
+        posts: 0,
+      };
+      existing.score += post.stats.engagement || 0;
+      existing.posts += 1;
+      map.set(key, existing);
+    }
+    return [...map.values()].sort((a, b) => b.score - a.score);
+  }, [enrichedPosts]);
+  const topAccount = engagementByAccount[0];
+  const getProfileForActor = useCallback(
+    (actor: string) => profilesByActor[normalizeTwitterUsername(actor)],
+    [profilesByActor],
+  );
+  const topAccountProfile = topAccount ? getProfileForActor(topAccount.identifier) : undefined;
+  const mappingsByBskyIdentifier = useMemo(() => {
+    const map = new Map<string, AccountMapping>();
+    for (const mapping of mappings) {
+      map.set(normalizeTwitterUsername(mapping.bskyIdentifier), mapping);
+    }
+    return map;
+  }, [mappings]);
+  const mappingsByTwitterUsername = useMemo(() => {
+    const map = new Map<string, AccountMapping>();
+    for (const mapping of mappings) {
+      for (const username of mapping.twitterUsernames) {
+        map.set(normalizeTwitterUsername(username), mapping);
+      }
+    }
+    return map;
+  }, [mappings]);
+  const groupOptions = useMemo(() => {
+    const options = new Map<string, { key: string; name: string; emoji: string }>();
+    for (const mapping of mappings) {
+      const group = getMappingGroupMeta(mapping);
+      if (!options.has(group.key)) {
+        options.set(group.key, group);
+      }
+    }
+    return [...options.values()].sort((a, b) => {
+      const aUngrouped = a.name === DEFAULT_GROUP_NAME;
+      const bUngrouped = b.name === DEFAULT_GROUP_NAME;
+      if (aUngrouped && !bUngrouped) return 1;
+      if (!aUngrouped && bUngrouped) return -1;
+      return a.name.localeCompare(b.name);
+    });
+  }, [mappings]);
+  const groupedMappings = useMemo(() => {
+    const groups = new Map<string, { key: string; name: string; emoji: string; mappings: AccountMapping[] }>();
+    for (const mapping of mappings) {
+      const group = getMappingGroupMeta(mapping);
+      const existing = groups.get(group.key);
+      if (!existing) {
+        groups.set(group.key, { ...group, mappings: [mapping] });
+        continue;
+      }
+      existing.mappings.push(mapping);
+    }
+
+    return [...groups.values()]
+      .sort((a, b) => {
+        const aUngrouped = a.name === DEFAULT_GROUP_NAME;
+        const bUngrouped = b.name === DEFAULT_GROUP_NAME;
+        if (aUngrouped && !bUngrouped) return 1;
+        if (!aUngrouped && bUngrouped) return -1;
+        return a.name.localeCompare(b.name);
+      })
+      .map((group) => ({
+        ...group,
+        mappings: [...group.mappings].sort((a, b) =>
+          `${(a.owner || '').toLowerCase()}-${a.bskyIdentifier.toLowerCase()}`.localeCompare(
+            `${(b.owner || '').toLowerCase()}-${b.bskyIdentifier.toLowerCase()}`,
+          ),
+        ),
+      }));
+  }, [mappings]);
+  const resolveMappingForPost = useCallback(
+    (post: EnrichedPost) =>
+      mappingsByBskyIdentifier.get(normalizeTwitterUsername(post.bskyIdentifier)) ||
+      mappingsByTwitterUsername.get(normalizeTwitterUsername(post.twitterUsername)),
+    [mappingsByBskyIdentifier, mappingsByTwitterUsername],
+  );
+  const resolveMappingForActivity = useCallback(
+    (activity: ActivityLog) =>
+      mappingsByBskyIdentifier.get(normalizeTwitterUsername(activity.bsky_identifier)) ||
+      mappingsByTwitterUsername.get(normalizeTwitterUsername(activity.twitter_username)),
+    [mappingsByBskyIdentifier, mappingsByTwitterUsername],
+  );
+  const filteredPostedActivity = useMemo(
+    () =>
+      postedActivity.filter((post) => {
+        if (postsGroupFilter === 'all') return true;
+        const mapping = resolveMappingForPost(post);
+        return getMappingGroupMeta(mapping).key === postsGroupFilter;
+      }),
+    [postedActivity, postsGroupFilter, resolveMappingForPost],
+  );
+  const filteredRecentActivity = useMemo(
+    () =>
+      recentActivity.filter((activity) => {
+        if (activityGroupFilter === 'all') return true;
+        const mapping = resolveMappingForActivity(activity);
+        return getMappingGroupMeta(mapping).key === activityGroupFilter;
+      }),
+    [activityGroupFilter, recentActivity, resolveMappingForActivity],
+  );
+
+  useEffect(() => {
+    if (postsGroupFilter !== 'all' && !groupOptions.some((group) => group.key === postsGroupFilter)) {
+      setPostsGroupFilter('all');
+    }
+    if (activityGroupFilter !== 'all' && !groupOptions.some((group) => group.key === activityGroupFilter)) {
+      setActivityGroupFilter('all');
+    }
+  }, [activityGroupFilter, groupOptions, postsGroupFilter]);
 
   const isBackfillQueued = useCallback(
     (mappingId: string) => pendingBackfills.some((entry) => entry.id === mappingId),
@@ -589,9 +1013,43 @@ function App() {
     }
   };
 
+  const addNewTwitterUsername = () => {
+    setNewTwitterUsers((previous) => addTwitterUsernames(previous, newTwitterInput));
+    setNewTwitterInput('');
+  };
+
+  const removeNewTwitterUsername = (username: string) => {
+    setNewTwitterUsers((previous) =>
+      previous.filter((existing) => normalizeTwitterUsername(existing) !== normalizeTwitterUsername(username)),
+    );
+  };
+
+  const addEditTwitterUsername = () => {
+    setEditTwitterUsers((previous) => addTwitterUsernames(previous, editTwitterInput));
+    setEditTwitterInput('');
+  };
+
+  const removeEditTwitterUsername = (username: string) => {
+    setEditTwitterUsers((previous) =>
+      previous.filter((existing) => normalizeTwitterUsername(existing) !== normalizeTwitterUsername(username)),
+    );
+  };
+
+  const toggleGroupCollapsed = (groupKey: string) => {
+    setCollapsedGroupKeys((previous) => ({
+      ...previous,
+      [groupKey]: !previous[groupKey],
+    }));
+  };
+
   const handleAddMapping = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!authHeaders) {
+      return;
+    }
+
+    if (newTwitterUsers.length === 0) {
+      showNotice('error', 'Add at least one Twitter username.');
       return;
     }
 
@@ -602,15 +1060,19 @@ function App() {
         '/api/mappings',
         {
           owner: newMapping.owner.trim(),
-          twitterUsernames: newMapping.twitterUsernames,
+          twitterUsernames: newTwitterUsers,
           bskyIdentifier: newMapping.bskyIdentifier.trim(),
           bskyPassword: newMapping.bskyPassword,
           bskyServiceUrl: newMapping.bskyServiceUrl.trim(),
+          groupName: newMapping.groupName.trim(),
+          groupEmoji: newMapping.groupEmoji.trim(),
         },
         { headers: authHeaders },
       );
 
       setNewMapping(defaultMappingForm());
+      setNewTwitterUsers([]);
+      setNewTwitterInput('');
       showNotice('success', 'Account mapping added.');
       await fetchData();
     } catch (error) {
@@ -624,16 +1086,24 @@ function App() {
     setEditingMapping(mapping);
     setEditForm({
       owner: mapping.owner || '',
-      twitterUsernames: mapping.twitterUsernames.join(', '),
       bskyIdentifier: mapping.bskyIdentifier,
       bskyPassword: '',
       bskyServiceUrl: mapping.bskyServiceUrl || 'https://bsky.social',
+      groupName: mapping.groupName || '',
+      groupEmoji: mapping.groupEmoji || '📁',
     });
+    setEditTwitterUsers(mapping.twitterUsernames);
+    setEditTwitterInput('');
   };
 
   const handleUpdateMapping = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!authHeaders || !editingMapping) {
+      return;
+    }
+
+    if (editTwitterUsers.length === 0) {
+      showNotice('error', 'At least one Twitter username is required.');
       return;
     }
 
@@ -644,16 +1114,20 @@ function App() {
         `/api/mappings/${editingMapping.id}`,
         {
           owner: editForm.owner.trim(),
-          twitterUsernames: editForm.twitterUsernames,
+          twitterUsernames: editTwitterUsers,
           bskyIdentifier: editForm.bskyIdentifier.trim(),
           bskyPassword: editForm.bskyPassword,
           bskyServiceUrl: editForm.bskyServiceUrl.trim(),
+          groupName: editForm.groupName.trim(),
+          groupEmoji: editForm.groupEmoji.trim(),
         },
         { headers: authHeaders },
       );
 
       setEditingMapping(null);
       setEditForm(defaultMappingForm());
+      setEditTwitterUsers([]);
+      setEditTwitterInput('');
       showNotice('success', 'Mapping updated.');
       await fetchData();
     } catch (error) {
@@ -870,10 +1344,10 @@ function App() {
 
       {notice ? (
         <div
-          className={cn(
-            'mb-5 animate-fade-in rounded-md border px-4 py-2 text-sm',
-            notice.tone === 'success' &&
-              'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:border-emerald-500/30 dark:text-emerald-300',
+                className={cn(
+                  'mb-5 animate-pop-in rounded-md border px-4 py-2 text-sm',
+                  notice.tone === 'success' &&
+                    'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:border-emerald-500/30 dark:text-emerald-300',
             notice.tone === 'error' &&
               'border-red-500/40 bg-red-500/10 text-red-700 dark:border-red-500/30 dark:text-red-300',
             notice.tone === 'info' &&
@@ -913,14 +1387,123 @@ function App() {
         </Card>
       ) : null}
 
-      <div className="panel-grid">
-        <section className="space-y-6">
+      <div className="mb-6 animate-fade-in overflow-x-auto pb-1">
+        <div className="inline-flex min-w-full gap-2 rounded-xl border border-border/70 bg-card/90 p-2 sm:min-w-0">
+          {dashboardTabs.map((tab) => {
+            const Icon = tab.icon;
+            const isActive = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                className={cn(
+                  'inline-flex h-11 min-w-[8rem] touch-manipulation items-center justify-center gap-2 rounded-lg px-4 text-sm font-medium transition-[transform,background-color,color,box-shadow] duration-200 ease-out motion-reduce:transition-none motion-safe:hover:-translate-y-0.5',
+                  isActive
+                    ? 'bg-foreground text-background shadow-sm'
+                    : 'bg-background text-muted-foreground hover:bg-muted hover:text-foreground hover:shadow-sm',
+                )}
+                onClick={() => setActiveTab(tab.id)}
+                type="button"
+              >
+                <Icon className="h-4 w-4" />
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {activeTab === 'overview' ? (
+        <section className="space-y-6 animate-fade-in">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+            <Card className="animate-slide-up">
+              <CardContent className="p-4">
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">Mapped Accounts</p>
+                <p className="mt-2 text-2xl font-semibold">{mappings.length}</p>
+              </CardContent>
+            </Card>
+            <Card className="animate-slide-up">
+              <CardContent className="p-4">
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">Backfill Queue</p>
+                <p className="mt-2 text-2xl font-semibold">{pendingBackfills.length}</p>
+              </CardContent>
+            </Card>
+            <Card className="animate-slide-up">
+              <CardContent className="p-4">
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">Current State</p>
+                <p className="mt-2 text-2xl font-semibold">{formatState(currentStatus?.state || 'idle')}</p>
+              </CardContent>
+            </Card>
+            <Card className="animate-slide-up">
+              <CardContent className="p-4">
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">Latest Activity</p>
+                <p className="mt-2 text-sm font-medium text-foreground">
+                  {latestActivity?.created_at ? new Date(latestActivity.created_at).toLocaleString() : 'No activity yet'}
+                </p>
+              </CardContent>
+            </Card>
+            <Card className="animate-slide-up">
+              <CardContent className="p-4">
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">Top Account (Engagement)</p>
+                {topAccount ? (
+                  <div className="mt-2 flex items-center gap-3">
+                    {topAccountProfile?.avatar ? (
+                      <img
+                        className="h-9 w-9 rounded-full border border-border/70 object-cover"
+                        src={topAccountProfile.avatar}
+                        alt={topAccountProfile.handle || topAccount.identifier}
+                        loading="lazy"
+                      />
+                    ) : (
+                      <div className="flex h-9 w-9 items-center justify-center rounded-full border border-border/70 bg-muted text-muted-foreground">
+                        <UserRound className="h-4 w-4" />
+                      </div>
+                    )}
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold">
+                        @{topAccountProfile?.handle || topAccount.identifier}
+                      </p>
+                      <p className="truncate text-xs text-muted-foreground">
+                        {formatCompactNumber(topAccount.score)} interactions • {topAccount.posts} posts
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="mt-2 text-sm text-muted-foreground">No engagement data yet.</p>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
+          <Card className="animate-slide-up">
+            <CardHeader>
+              <CardTitle>Quick Navigation</CardTitle>
+              <CardDescription>Use tabs to focus one workflow at a time, especially on mobile.</CardDescription>
+            </CardHeader>
+            <CardContent className="flex flex-wrap gap-2 pt-0">
+              {dashboardTabs
+                .filter((tab) => tab.id !== 'overview')
+                .map((tab) => {
+                  const Icon = tab.icon;
+                  return (
+                    <Button key={`overview-${tab.id}`} variant="outline" onClick={() => setActiveTab(tab.id)}>
+                      <Icon className="mr-2 h-4 w-4" />
+                      Open {tab.label}
+                    </Button>
+                  );
+                })}
+            </CardContent>
+          </Card>
+        </section>
+      ) : null}
+
+      {activeTab === 'accounts' ? (
+        <section className="space-y-6 animate-fade-in">
           <Card className="animate-slide-up">
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
                 <div className="space-y-1">
                   <CardTitle>Active Accounts</CardTitle>
-                  <CardDescription>Manage source-to-target mappings and run account actions.</CardDescription>
+                  <CardDescription>Organize mappings into folders and collapse/expand groups.</CardDescription>
                 </div>
                 <Badge variant="outline">{mappings.length} configured</Badge>
               </div>
@@ -931,154 +1514,439 @@ function App() {
                   No mappings yet. Add one from the settings panel.
                 </div>
               ) : (
-                <div className="overflow-x-auto">
-                  <table className="min-w-full text-left text-sm">
-                    <thead className="border-b border-border text-xs uppercase tracking-wide text-muted-foreground">
-                      <tr>
-                        <th className="px-2 py-3">Owner</th>
-                        <th className="px-2 py-3">Twitter Sources</th>
-                        <th className="px-2 py-3">Bluesky Target</th>
-                        <th className="px-2 py-3">Status</th>
-                        <th className="px-2 py-3 text-right">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {mappings.map((mapping) => {
-                        const queued = isBackfillQueued(mapping.id);
-                        const active = isBackfillActive(mapping.id);
-                        const queuePosition = getBackfillEntry(mapping.id)?.position;
+                <div className="space-y-3">
+                  {groupedMappings.map((group, groupIndex) => {
+                    const collapsed = collapsedGroupKeys[group.key] === true;
 
-                        return (
-                          <tr key={mapping.id} className="border-b border-border/60 last:border-0">
-                            <td className="px-2 py-3 align-top">
-                              <div className="flex items-center gap-2 font-medium">
-                                <UserRound className="h-4 w-4 text-muted-foreground" />
-                                {mapping.owner || 'System'}
-                              </div>
-                            </td>
-                            <td className="px-2 py-3 align-top">
-                              <div className="flex flex-wrap gap-2">
-                                {mapping.twitterUsernames.map((username) => (
-                                  <Badge key={username} variant="secondary">
-                                    @{username}
-                                  </Badge>
-                                ))}
-                              </div>
-                            </td>
-                            <td className="px-2 py-3 align-top">
-                              <span className="font-mono text-xs sm:text-sm">{mapping.bskyIdentifier}</span>
-                            </td>
-                            <td className="px-2 py-3 align-top">
-                              {active ? (
-                                <Badge variant="warning">Backfilling</Badge>
-                              ) : queued ? (
-                                <Badge variant="warning">Queued {queuePosition ? `#${queuePosition}` : ''}</Badge>
-                              ) : (
-                                <Badge variant="success">Active</Badge>
-                              )}
-                            </td>
-                            <td className="px-2 py-3 align-top">
-                              <div className="flex flex-wrap justify-end gap-1">
-                                {isAdmin ? (
-                                  <>
-                                    <Button variant="outline" size="sm" onClick={() => startEditMapping(mapping)}>
-                                      Edit
-                                    </Button>
-                                    <Button
-                                      variant="outline"
-                                      size="sm"
-                                      onClick={() => {
-                                        void requestBackfill(mapping.id, 'normal');
-                                      }}
-                                    >
-                                      Backfill
-                                    </Button>
-                                    <Button
-                                      variant="subtle"
-                                      size="sm"
-                                      onClick={() => {
-                                        void requestBackfill(mapping.id, 'reset');
-                                      }}
-                                    >
-                                      Reset + Backfill
-                                    </Button>
-                                    <Button
-                                      variant="destructive"
-                                      size="sm"
-                                      onClick={() => {
-                                        void handleDeleteAllPosts(mapping.id);
-                                      }}
-                                    >
-                                      Delete Posts
-                                    </Button>
-                                  </>
-                                ) : null}
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  onClick={() => {
-                                    void handleDeleteMapping(mapping.id);
-                                  }}
-                                >
-                                  <Trash2 className="mr-1 h-4 w-4" />
-                                  Remove
-                                </Button>
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                    return (
+                      <div
+                        key={group.key}
+                        className="overflow-hidden rounded-lg border border-border/70 bg-card/70 animate-slide-up [animation-fill-mode:both]"
+                        style={{ animationDelay: `${Math.min(groupIndex * 45, 220)}ms` }}
+                      >
+                        <button
+                          className="group flex w-full items-center justify-between bg-muted/40 px-3 py-2 text-left transition-[background-color,padding] duration-200 hover:bg-muted/70"
+                          onClick={() => toggleGroupCollapsed(group.key)}
+                          type="button"
+                        >
+                          <div className="flex items-center gap-2">
+                            <Folder className="h-4 w-4 text-muted-foreground" />
+                            <span className="text-base">{group.emoji}</span>
+                            <span className="font-medium">{group.name}</span>
+                            <Badge variant="outline">{group.mappings.length}</Badge>
+                          </div>
+                          <ChevronDown
+                            className={cn(
+                              'h-4 w-4 transition-transform duration-200 motion-reduce:transition-none',
+                              collapsed ? '-rotate-90' : 'rotate-0',
+                            )}
+                          />
+                        </button>
+
+                        <div
+                          className={cn(
+                            'grid transition-[grid-template-rows,opacity] duration-300 ease-out motion-reduce:transition-none',
+                            collapsed ? 'grid-rows-[0fr] opacity-0' : 'grid-rows-[1fr] opacity-100',
+                          )}
+                        >
+                          <div className="min-h-0 overflow-hidden">
+                            <div className="overflow-x-auto">
+                            <table className="min-w-full text-left text-sm">
+                              <thead className="border-b border-border text-xs uppercase tracking-wide text-muted-foreground">
+                                <tr>
+                                  <th className="px-2 py-3">Owner</th>
+                                  <th className="px-2 py-3">Twitter Sources</th>
+                                  <th className="px-2 py-3">Bluesky Target</th>
+                                  <th className="px-2 py-3">Status</th>
+                                  <th className="px-2 py-3 text-right">Actions</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {group.mappings.map((mapping) => {
+                                  const queued = isBackfillQueued(mapping.id);
+                                  const active = isBackfillActive(mapping.id);
+                                  const queuePosition = getBackfillEntry(mapping.id)?.position;
+                                  const profile = getProfileForActor(mapping.bskyIdentifier);
+                                  const profileHandle = profile?.handle || mapping.bskyIdentifier;
+                                  const profileName = profile?.displayName || profileHandle;
+
+                                  return (
+                                    <tr key={mapping.id} className="interactive-row border-b border-border/60 last:border-0">
+                                      <td className="px-2 py-3 align-top">
+                                        <div className="flex items-center gap-2 font-medium">
+                                          <UserRound className="h-4 w-4 text-muted-foreground" />
+                                          {mapping.owner || 'System'}
+                                        </div>
+                                      </td>
+                                      <td className="px-2 py-3 align-top">
+                                        <div className="flex flex-wrap gap-2">
+                                          {mapping.twitterUsernames.map((username) => (
+                                            <Badge key={username} variant="secondary">
+                                              @{username}
+                                            </Badge>
+                                          ))}
+                                        </div>
+                                      </td>
+                                      <td className="px-2 py-3 align-top">
+                                        <div className="flex items-center gap-2">
+                                          {profile?.avatar ? (
+                                            <img
+                                              className="h-8 w-8 rounded-full border border-border/70 object-cover"
+                                              src={profile.avatar}
+                                              alt={profileName}
+                                              loading="lazy"
+                                            />
+                                          ) : (
+                                            <div className="flex h-8 w-8 items-center justify-center rounded-full border border-border/70 bg-muted text-muted-foreground">
+                                              <UserRound className="h-4 w-4" />
+                                            </div>
+                                          )}
+                                          <div className="min-w-0">
+                                            <p className="truncate text-sm font-medium">{profileName}</p>
+                                            <p className="truncate font-mono text-xs text-muted-foreground">{profileHandle}</p>
+                                          </div>
+                                        </div>
+                                      </td>
+                                      <td className="px-2 py-3 align-top">
+                                        {active ? (
+                                          <Badge variant="warning">Backfilling</Badge>
+                                        ) : queued ? (
+                                          <Badge variant="warning">Queued {queuePosition ? `#${queuePosition}` : ''}</Badge>
+                                        ) : (
+                                          <Badge variant="success">Active</Badge>
+                                        )}
+                                      </td>
+                                      <td className="px-2 py-3 align-top">
+                                        <div className="flex flex-wrap justify-end gap-1">
+                                          {isAdmin ? (
+                                            <>
+                                              <Button variant="outline" size="sm" onClick={() => startEditMapping(mapping)}>
+                                                Edit
+                                              </Button>
+                                              <Button
+                                                variant="outline"
+                                                size="sm"
+                                                onClick={() => {
+                                                  void requestBackfill(mapping.id, 'normal');
+                                                }}
+                                              >
+                                                Backfill
+                                              </Button>
+                                              <Button
+                                                variant="subtle"
+                                                size="sm"
+                                                onClick={() => {
+                                                  void requestBackfill(mapping.id, 'reset');
+                                                }}
+                                              >
+                                                Reset + Backfill
+                                              </Button>
+                                              <Button
+                                                variant="destructive"
+                                                size="sm"
+                                                onClick={() => {
+                                                  void handleDeleteAllPosts(mapping.id);
+                                                }}
+                                              >
+                                                Delete Posts
+                                              </Button>
+                                            </>
+                                          ) : null}
+                                          <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            onClick={() => {
+                                              void handleDeleteMapping(mapping.id);
+                                            }}
+                                          >
+                                            <Trash2 className="mr-1 h-4 w-4" />
+                                            Remove
+                                          </Button>
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </CardContent>
           </Card>
+        </section>
+      ) : null}
 
+      {activeTab === 'posts' ? (
+        <section className="space-y-6 animate-fade-in">
           <Card className="animate-slide-up">
             <CardHeader className="pb-3">
-              <CardTitle>Already Posted</CardTitle>
-              <CardDescription>Native-styled feed of successfully posted Bluesky entries.</CardDescription>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="space-y-1">
+                  <CardTitle>Already Posted</CardTitle>
+                  <CardDescription>Native-styled feed of successfully posted Bluesky entries.</CardDescription>
+                </div>
+                <div className="w-full max-w-xs">
+                  <Label htmlFor="posts-group-filter">Filter group</Label>
+                  <select
+                    id="posts-group-filter"
+                    className={selectClassName}
+                    value={postsGroupFilter}
+                    onChange={(event) => setPostsGroupFilter(event.target.value)}
+                  >
+                    <option value="all">All folders</option>
+                    {groupOptions.map((group) => (
+                      <option key={`posts-filter-${group.key}`} value={group.key}>
+                        {group.emoji} {group.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
             </CardHeader>
             <CardContent className="pt-0">
-              {postedActivity.length === 0 ? (
+              {filteredPostedActivity.length === 0 ? (
                 <div className="rounded-lg border border-dashed border-border/70 p-6 text-center text-sm text-muted-foreground">
                   No posted entries yet.
                 </div>
               ) : (
                 <div className="grid gap-3 md:grid-cols-2">
-                  {postedActivity.map((activity, index) => {
-                    const postUrl = getBskyPostUrl(activity);
+                  {filteredPostedActivity.map((post, index) => {
+                    const postUrl =
+                      post.postUrl ||
+                      (post.bskyUri
+                        ? `https://bsky.app/profile/${post.bskyIdentifier}/post/${post.bskyUri
+                            .split('/')
+                            .filter(Boolean)
+                            .pop() || ''}`
+                        : undefined);
+                    const sourceTweetUrl = post.twitterUrl || getTwitterPostUrl(post.twitterUsername, post.twitterId);
+                    const segments = buildFacetSegments(post.text, post.facets || []);
+                    const mapping = resolveMappingForPost(post);
+                    const groupMeta = getMappingGroupMeta(mapping);
+                    const statItems: Array<{
+                      key: 'likes' | 'reposts' | 'replies' | 'quotes';
+                      value: number;
+                      icon: typeof Heart;
+                    }> = [
+                      { key: 'likes', value: post.stats.likes, icon: Heart },
+                      { key: 'reposts', value: post.stats.reposts, icon: Repeat2 },
+                      { key: 'replies', value: post.stats.replies, icon: MessageCircle },
+                      { key: 'quotes', value: post.stats.quotes, icon: Quote },
+                    ].filter((item) => item.value > 0);
+                    const authorAvatar = post.author.avatar || getProfileForActor(post.author.handle)?.avatar;
+                    const authorHandle = post.author.handle || post.bskyIdentifier;
+                    const authorName = post.author.displayName || authorHandle;
+
                     return (
                       <article
-                        key={`${activity.twitter_id}-${activity.created_at || index}-posted`}
-                        className="rounded-xl border border-border/70 bg-background/80 p-4 shadow-sm"
+                        key={post.bskyUri || `${post.bskyCid || 'post'}-${post.createdAt || index}`}
+                        className="rounded-xl border border-border/70 bg-background/80 p-4 shadow-sm transition-[transform,box-shadow,border-color,background-color] duration-200 ease-out motion-reduce:transition-none motion-safe:hover:-translate-y-0.5 motion-safe:hover:shadow-md animate-slide-up [animation-fill-mode:both]"
+                        style={{ animationDelay: `${Math.min(index * 45, 260)}ms` }}
                       >
                         <div className="mb-3 flex items-start justify-between gap-3">
-                          <div>
-                            <p className="text-sm font-semibold">@{activity.bsky_identifier}</p>
-                            <p className="text-xs text-muted-foreground">from @{activity.twitter_username}</p>
+                          <div className="flex items-center gap-2">
+                            {authorAvatar ? (
+                              <img
+                                className="h-9 w-9 rounded-full border border-border/70 object-cover"
+                                src={authorAvatar}
+                                alt={authorName}
+                                loading="lazy"
+                              />
+                            ) : (
+                              <div className="flex h-9 w-9 items-center justify-center rounded-full border border-border/70 bg-muted text-muted-foreground">
+                                <UserRound className="h-4 w-4" />
+                              </div>
+                            )}
+                            <div>
+                              <p className="text-sm font-semibold">{authorName}</p>
+                              <p className="text-xs text-muted-foreground">
+                                @{authorHandle} • from @{post.twitterUsername}
+                              </p>
+                            </div>
                           </div>
-                          <Badge variant="success">Posted</Badge>
+                          <div className="flex items-center gap-2">
+                            <Badge variant="outline">
+                              {groupMeta.emoji} {groupMeta.name}
+                            </Badge>
+                            <Badge variant="success">Posted</Badge>
+                          </div>
                         </div>
+
                         <p className="mb-3 whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground">
-                          {activity.tweet_text || `(No cached text) Tweet ID ${activity.twitter_id}`}
+                          {segments.map((segment, segmentIndex) => {
+                            if (segment.type === 'text') {
+                              return <span key={`${post.bskyUri}-segment-${segmentIndex}`}>{segment.text}</span>;
+                            }
+
+                            const linkTone =
+                              segment.type === 'mention'
+                                ? 'text-cyan-600 hover:text-cyan-500 dark:text-cyan-300 dark:hover:text-cyan-200'
+                                : segment.type === 'tag'
+                                  ? 'text-indigo-600 hover:text-indigo-500 dark:text-indigo-300 dark:hover:text-indigo-200'
+                                  : 'text-sky-600 hover:text-sky-500 dark:text-sky-300 dark:hover:text-sky-200';
+
+                            return (
+                              <a
+                                key={`${post.bskyUri}-segment-${segmentIndex}`}
+                                className={cn('underline decoration-transparent transition hover:decoration-current', linkTone)}
+                                href={segment.href}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                {segment.text}
+                              </a>
+                            );
+                          })}
                         </p>
+
+                        {post.media.length > 0 ? (
+                          <div className="mb-3 space-y-2">
+                            {post.media.map((media, mediaIndex) => {
+                              if (media.type === 'image') {
+                                const imageSrc = media.url || media.thumb;
+                                if (!imageSrc) return null;
+                                return (
+                                  <a
+                                    key={`${post.bskyUri}-media-${mediaIndex}`}
+                                    className="group block overflow-hidden rounded-lg border border-border/70 bg-muted"
+                                    href={imageSrc}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                  >
+                                    <img
+                                      className="h-56 w-full object-cover transition-transform duration-300 ease-out motion-reduce:transition-none motion-safe:group-hover:scale-[1.02]"
+                                      src={imageSrc}
+                                      alt={media.alt || 'Bluesky media'}
+                                      loading="lazy"
+                                    />
+                                  </a>
+                                );
+                              }
+
+                              if (media.type === 'video') {
+                                const videoHref = media.url || media.thumb;
+                                return (
+                                  <div
+                                    key={`${post.bskyUri}-media-${mediaIndex}`}
+                                    className="group overflow-hidden rounded-lg border border-border/70 bg-muted"
+                                  >
+                                    {media.thumb ? (
+                                      <img
+                                        className="h-56 w-full object-cover transition-transform duration-300 ease-out motion-reduce:transition-none motion-safe:group-hover:scale-[1.02]"
+                                        src={media.thumb}
+                                        alt={media.alt || 'Video thumbnail'}
+                                        loading="lazy"
+                                      />
+                                    ) : (
+                                      <div className="flex h-44 items-center justify-center text-sm text-muted-foreground">
+                                        Video attachment
+                                      </div>
+                                    )}
+                                    {videoHref ? (
+                                      <div className="border-t border-border/70 p-2 text-right">
+                                        <a
+                                          className="inline-flex items-center text-xs text-foreground underline-offset-4 hover:underline"
+                                          href={videoHref}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                        >
+                                          Open video
+                                          <ArrowUpRight className="ml-1 h-3 w-3" />
+                                        </a>
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                );
+                              }
+
+                              if (media.type === 'external') {
+                                if (!media.url) return null;
+                                return (
+                                  <a
+                                    key={`${post.bskyUri}-media-${mediaIndex}`}
+                                    className="group block overflow-hidden rounded-lg border border-border/70 bg-background transition-colors hover:bg-muted/60"
+                                    href={media.url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                  >
+                                    {media.thumb ? (
+                                      <img
+                                        className="h-40 w-full object-cover transition-transform duration-300 ease-out motion-reduce:transition-none motion-safe:group-hover:scale-[1.02]"
+                                        src={media.thumb}
+                                        alt={media.title || media.url}
+                                        loading="lazy"
+                                      />
+                                    ) : null}
+                                    <div className="space-y-1 p-3">
+                                      <p className="truncate text-sm font-medium">
+                                        {media.title || media.url}
+                                      </p>
+                                      {media.description ? (
+                                        <p className="max-h-10 overflow-hidden text-xs text-muted-foreground">
+                                          {media.description}
+                                        </p>
+                                      ) : null}
+                                    </div>
+                                  </a>
+                                );
+                              }
+
+                              return null;
+                            })}
+                          </div>
+                        ) : null}
+
+                        {statItems.length > 0 ? (
+                          <div className="mb-3 flex flex-wrap gap-2">
+                            {statItems.map((stat) => {
+                              const Icon = stat.icon;
+                              return (
+                                <span
+                                  key={`${post.bskyUri}-stat-${stat.key}`}
+                                  className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-muted px-2 py-1 text-xs text-muted-foreground"
+                                >
+                                  <Icon className="h-3.5 w-3.5" />
+                                  {formatCompactNumber(stat.value)}
+                                </span>
+                              );
+                            })}
+                          </div>
+                        ) : null}
+
                         <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
-                          <span>{activity.created_at ? new Date(activity.created_at).toLocaleString() : 'Unknown time'}</span>
-                          {postUrl ? (
-                            <a
-                              className="inline-flex items-center text-foreground underline-offset-4 hover:underline"
-                              href={postUrl}
-                              target="_blank"
-                              rel="noreferrer"
-                            >
-                              Open
-                              <ArrowUpRight className="ml-1 h-3 w-3" />
-                            </a>
-                          ) : (
-                            <span>Missing URI</span>
-                          )}
+                          <span>{post.createdAt ? new Date(post.createdAt).toLocaleString() : 'Unknown time'}</span>
+                          <div className="flex items-center gap-3">
+                            {sourceTweetUrl ? (
+                              <a
+                                className="inline-flex items-center text-foreground underline-offset-4 hover:underline"
+                                href={sourceTweetUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                Source
+                                <ArrowUpRight className="ml-1 h-3 w-3" />
+                              </a>
+                            ) : null}
+                            {postUrl ? (
+                              <a
+                                className="inline-flex items-center text-foreground underline-offset-4 hover:underline"
+                                href={postUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                Bluesky
+                                <ArrowUpRight className="ml-1 h-3 w-3" />
+                              </a>
+                            ) : (
+                              <span>Missing URI</span>
+                            )}
+                          </div>
                         </div>
                       </article>
                     );
@@ -1087,14 +1955,38 @@ function App() {
               )}
             </CardContent>
           </Card>
+        </section>
+      ) : null}
 
+      {activeTab === 'activity' ? (
+        <section className="space-y-6 animate-fade-in">
           <Card className="animate-slide-up">
             <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2">
-                <History className="h-4 w-4" />
-                Recent Activity
-              </CardTitle>
-              <CardDescription>Latest migration outcomes from the processing database.</CardDescription>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="space-y-1">
+                  <CardTitle className="flex items-center gap-2">
+                    <History className="h-4 w-4" />
+                    Recent Activity
+                  </CardTitle>
+                  <CardDescription>Latest migration outcomes from the processing database.</CardDescription>
+                </div>
+                <div className="w-full max-w-xs">
+                  <Label htmlFor="activity-group-filter">Filter group</Label>
+                  <select
+                    id="activity-group-filter"
+                    className={selectClassName}
+                    value={activityGroupFilter}
+                    onChange={(event) => setActivityGroupFilter(event.target.value)}
+                  >
+                    <option value="all">All folders</option>
+                    {groupOptions.map((group) => (
+                      <option key={`activity-filter-${group.key}`} value={group.key}>
+                        {group.emoji} {group.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
             </CardHeader>
             <CardContent className="pt-0">
               <div className="overflow-x-auto">
@@ -1103,24 +1995,35 @@ function App() {
                     <tr>
                       <th className="px-2 py-3">Time</th>
                       <th className="px-2 py-3">Twitter User</th>
+                      <th className="px-2 py-3">Group</th>
                       <th className="px-2 py-3">Status</th>
                       <th className="px-2 py-3">Details</th>
                       <th className="px-2 py-3 text-right">Link</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {recentActivity.map((activity, index) => {
+                    {filteredRecentActivity.map((activity, index) => {
                       const href = getBskyPostUrl(activity);
+                      const sourceTweetUrl = getTwitterPostUrl(activity.twitter_username, activity.twitter_id);
+                      const mapping = resolveMappingForActivity(activity);
+                      const groupMeta = getMappingGroupMeta(mapping);
 
                       return (
                         <tr
                           key={`${activity.twitter_id}-${activity.created_at || index}`}
-                          className="border-b border-border/60 last:border-0"
+                          className="interactive-row border-b border-border/60 last:border-0"
                         >
                           <td className="px-2 py-3 align-top text-xs text-muted-foreground">
-                            {activity.created_at ? new Date(activity.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--'}
+                            {activity.created_at
+                              ? new Date(activity.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                              : '--'}
                           </td>
                           <td className="px-2 py-3 align-top font-medium">@{activity.twitter_username}</td>
+                          <td className="px-2 py-3 align-top">
+                            <Badge variant="outline">
+                              {groupMeta.emoji} {groupMeta.name}
+                            </Badge>
+                          </td>
                           <td className="px-2 py-3 align-top">
                             {activity.status === 'migrated' ? (
                               <Badge variant="success">Migrated</Badge>
@@ -1134,22 +2037,40 @@ function App() {
                             <div className="max-w-[340px] truncate">{activity.tweet_text || `Tweet ID: ${activity.twitter_id}`}</div>
                           </td>
                           <td className="px-2 py-3 align-top text-right">
-                            {href ? (
-                              <a className="inline-flex items-center text-xs text-foreground underline-offset-4 hover:underline" href={href} target="_blank" rel="noreferrer">
-                                Open
-                                <ArrowUpRight className="ml-1 h-3 w-3" />
-                              </a>
-                            ) : (
-                              <span className="text-xs text-muted-foreground">--</span>
-                            )}
+                            <div className="flex flex-col items-end gap-1">
+                              {sourceTweetUrl ? (
+                                <a
+                                  className="inline-flex items-center text-xs text-foreground underline-offset-4 hover:underline"
+                                  href={sourceTweetUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                >
+                                  Source
+                                  <ArrowUpRight className="ml-1 h-3 w-3" />
+                                </a>
+                              ) : null}
+                              {href ? (
+                                <a
+                                  className="inline-flex items-center text-xs text-foreground underline-offset-4 hover:underline"
+                                  href={href}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                >
+                                  Bluesky
+                                  <ArrowUpRight className="ml-1 h-3 w-3" />
+                                </a>
+                              ) : (
+                                <span className="text-xs text-muted-foreground">--</span>
+                              )}
+                            </div>
                           </td>
                         </tr>
                       );
                     })}
-                    {recentActivity.length === 0 ? (
+                    {filteredRecentActivity.length === 0 ? (
                       <tr>
-                        <td className="px-2 py-6 text-center text-sm text-muted-foreground" colSpan={5}>
-                          No activity yet.
+                        <td className="px-2 py-6 text-center text-sm text-muted-foreground" colSpan={6}>
+                          No activity for this filter.
                         </td>
                       </tr>
                     ) : null}
@@ -1159,9 +2080,11 @@ function App() {
             </CardContent>
           </Card>
         </section>
+      ) : null}
 
-        {isAdmin ? (
-          <aside className="space-y-6">
+      {activeTab === 'settings' ? (
+        isAdmin ? (
+          <section className="space-y-6 animate-fade-in">
             <Card className="animate-slide-up">
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
@@ -1233,7 +2156,9 @@ function App() {
                 <form className="space-y-3 border-t border-border pt-6" onSubmit={handleSaveAiConfig}>
                   <div className="flex items-center justify-between">
                     <h3 className="text-sm font-semibold">AI Settings</h3>
-                    <Badge variant={aiConfig.apiKey ? 'success' : 'outline'}>{aiConfig.apiKey ? 'Configured' : 'Optional'}</Badge>
+                    <Badge variant={aiConfig.apiKey ? 'success' : 'outline'}>
+                      {aiConfig.apiKey ? 'Configured' : 'Optional'}
+                    </Badge>
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="provider">Provider</Label>
@@ -1308,16 +2233,74 @@ function App() {
                       required
                     />
                   </div>
+                  <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
+                    <div className="space-y-2">
+                      <Label htmlFor="groupName">Folder / Group Name</Label>
+                      <Input
+                        id="groupName"
+                        value={newMapping.groupName}
+                        onChange={(event) => {
+                          setNewMapping((prev) => ({ ...prev, groupName: event.target.value }));
+                        }}
+                        placeholder="Gaming, News, Sports..."
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="groupEmoji">Emoji</Label>
+                      <Input
+                        id="groupEmoji"
+                        value={newMapping.groupEmoji}
+                        onChange={(event) => {
+                          setNewMapping((prev) => ({ ...prev, groupEmoji: event.target.value }));
+                        }}
+                        placeholder="📁"
+                        maxLength={8}
+                      />
+                    </div>
+                  </div>
                   <div className="space-y-2">
-                    <Label htmlFor="twitterUsernames">Twitter Usernames (comma separated)</Label>
-                    <Input
-                      id="twitterUsernames"
-                      value={newMapping.twitterUsernames}
-                      onChange={(event) => {
-                        setNewMapping((prev) => ({ ...prev, twitterUsernames: event.target.value }));
-                      }}
-                      required
-                    />
+                    <Label htmlFor="twitterUsernames">Twitter Usernames</Label>
+                    <div className="flex gap-2">
+                      <Input
+                        id="twitterUsernames"
+                        value={newTwitterInput}
+                        onChange={(event) => {
+                          setNewTwitterInput(event.target.value);
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ',') {
+                            event.preventDefault();
+                            addNewTwitterUsername();
+                          }
+                        }}
+                        placeholder="@accountname (press Enter to add)"
+                      />
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        type="button"
+                        disabled={normalizeTwitterUsername(newTwitterInput).length === 0}
+                        onClick={addNewTwitterUsername}
+                      >
+                        Add
+                      </Button>
+                    </div>
+                    <p className="text-xs text-muted-foreground">Press Enter or comma to add multiple handles quickly.</p>
+                    <div className="flex min-h-7 flex-wrap gap-2">
+                      {newTwitterUsers.map((username) => (
+                        <Badge key={`new-${username}`} variant="secondary" className="gap-1 pr-1">
+                          @{username}
+                          <button
+                            type="button"
+                            className="rounded-full px-1 text-muted-foreground transition hover:bg-background hover:text-foreground"
+                            onClick={() => removeNewTwitterUsername(username)}
+                            aria-label={`Remove @${username}`}
+                          >
+                            ×
+                          </button>
+                        </Badge>
+                      ))}
+                    </div>
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="bskyIdentifier">Bluesky Identifier</Label>
@@ -1392,13 +2375,14 @@ function App() {
                   Import configuration
                 </Button>
                 <p className="text-xs text-muted-foreground">
-                  Imports preserve dashboard users and passwords while replacing mappings, provider keys, and scheduler settings.
+                  Imports preserve dashboard users and passwords while replacing mappings, provider keys, and scheduler
+                  settings.
                 </p>
               </CardContent>
             </Card>
-          </aside>
-        ) : null}
-      </div>
+          </section>
+        ) : null
+      ) : null}
 
       {editingMapping ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
@@ -1420,16 +2404,73 @@ function App() {
                     required
                   />
                 </div>
+                <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-groupName">Folder / Group Name</Label>
+                    <Input
+                      id="edit-groupName"
+                      value={editForm.groupName}
+                      onChange={(event) => {
+                        setEditForm((prev) => ({ ...prev, groupName: event.target.value }));
+                      }}
+                      placeholder="Gaming, News, Sports..."
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-groupEmoji">Emoji</Label>
+                    <Input
+                      id="edit-groupEmoji"
+                      value={editForm.groupEmoji}
+                      onChange={(event) => {
+                        setEditForm((prev) => ({ ...prev, groupEmoji: event.target.value }));
+                      }}
+                      placeholder="📁"
+                      maxLength={8}
+                    />
+                  </div>
+                </div>
                 <div className="space-y-2">
                   <Label htmlFor="edit-twitterUsernames">Twitter Usernames</Label>
-                  <Input
-                    id="edit-twitterUsernames"
-                    value={editForm.twitterUsernames}
-                    onChange={(event) => {
-                      setEditForm((prev) => ({ ...prev, twitterUsernames: event.target.value }));
-                    }}
-                    required
-                  />
+                  <div className="flex gap-2">
+                    <Input
+                      id="edit-twitterUsernames"
+                      value={editTwitterInput}
+                      onChange={(event) => {
+                        setEditTwitterInput(event.target.value);
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ',') {
+                          event.preventDefault();
+                          addEditTwitterUsername();
+                        }
+                      }}
+                      placeholder="@accountname"
+                    />
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      type="button"
+                      disabled={normalizeTwitterUsername(editTwitterInput).length === 0}
+                      onClick={addEditTwitterUsername}
+                    >
+                      Add
+                    </Button>
+                  </div>
+                  <div className="flex min-h-7 flex-wrap gap-2">
+                    {editTwitterUsers.map((username) => (
+                      <Badge key={`edit-${username}`} variant="secondary" className="gap-1 pr-1">
+                        @{username}
+                        <button
+                          type="button"
+                          className="rounded-full px-1 text-muted-foreground transition hover:bg-background hover:text-foreground"
+                          onClick={() => removeEditTwitterUsername(username)}
+                          aria-label={`Remove @${username}`}
+                        >
+                          ×
+                        </button>
+                      </Badge>
+                    ))}
+                  </div>
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="edit-bskyIdentifier">Bluesky Identifier</Label>

@@ -34,6 +34,8 @@ export interface AccountMapping {
   bskyServiceUrl?: string;
   enabled: boolean;
   owner?: string;
+  groupName?: string;
+  groupEmoji?: string;
 }
 
 export interface AppConfig {

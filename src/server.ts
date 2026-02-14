@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import axios from 'axios';
 import bcrypt from 'bcryptjs';
 import cors from 'cors';
 import express from 'express';
@@ -8,6 +9,7 @@ import jwt from 'jsonwebtoken';
 import { deleteAllPosts } from './bsky.js';
 import { getConfig, saveConfig } from './config-manager.js';
 import { dbService } from './db.js';
+import type { ProcessedTweet } from './db.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -18,6 +20,290 @@ const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret';
 const WEB_DIST_DIR = path.join(__dirname, '..', 'web', 'dist');
 const LEGACY_PUBLIC_DIR = path.join(__dirname, '..', 'public');
 const staticAssetsDir = fs.existsSync(path.join(WEB_DIST_DIR, 'index.html')) ? WEB_DIST_DIR : LEGACY_PUBLIC_DIR;
+const BSKY_APPVIEW_URL = process.env.BSKY_APPVIEW_URL || 'https://public.api.bsky.app';
+const POST_VIEW_CACHE_TTL_MS = 60_000;
+const PROFILE_CACHE_TTL_MS = 5 * 60_000;
+
+interface CacheEntry<T> {
+  value: T;
+  expiresAt: number;
+}
+
+interface BskyProfileView {
+  did?: string;
+  handle?: string;
+  displayName?: string;
+  avatar?: string;
+}
+
+interface EnrichedPostMedia {
+  type: 'image' | 'video' | 'external';
+  url?: string;
+  thumb?: string;
+  alt?: string;
+  width?: number;
+  height?: number;
+  title?: string;
+  description?: string;
+}
+
+interface EnrichedPost {
+  bskyUri: string;
+  bskyCid?: string;
+  bskyIdentifier: string;
+  twitterId: string;
+  twitterUsername: string;
+  twitterUrl?: string;
+  postUrl?: string;
+  createdAt?: string;
+  text: string;
+  facets: unknown[];
+  author: {
+    did?: string;
+    handle: string;
+    displayName?: string;
+    avatar?: string;
+  };
+  stats: {
+    likes: number;
+    reposts: number;
+    replies: number;
+    quotes: number;
+    engagement: number;
+  };
+  media: EnrichedPostMedia[];
+}
+
+const postViewCache = new Map<string, CacheEntry<any>>();
+const profileCache = new Map<string, CacheEntry<BskyProfileView>>();
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+  if (size <= 0) return [items];
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+}
+
+function nowMs() {
+  return Date.now();
+}
+
+function buildPostUrl(identifier: string, uri?: string): string | undefined {
+  if (!uri) return undefined;
+  const rkey = uri.split('/').filter(Boolean).pop();
+  if (!rkey) return undefined;
+  return `https://bsky.app/profile/${identifier}/post/${rkey}`;
+}
+
+function buildTwitterPostUrl(username: string, twitterId: string): string | undefined {
+  if (!username || !twitterId) return undefined;
+  return `https://x.com/${normalizeActor(username)}/status/${twitterId}`;
+}
+
+function normalizeActor(actor: string): string {
+  return actor.trim().replace(/^@/, '').toLowerCase();
+}
+
+function extractMediaFromEmbed(embed: any): EnrichedPostMedia[] {
+  if (!embed || typeof embed !== 'object') {
+    return [];
+  }
+
+  const type = embed.$type;
+  if (type === 'app.bsky.embed.images#view') {
+    const images = Array.isArray(embed.images) ? embed.images : [];
+    return images.map((image: any) => ({
+      type: 'image' as const,
+      url: typeof image.fullsize === 'string' ? image.fullsize : undefined,
+      thumb: typeof image.thumb === 'string' ? image.thumb : undefined,
+      alt: typeof image.alt === 'string' ? image.alt : undefined,
+      width: typeof image.aspectRatio?.width === 'number' ? image.aspectRatio.width : undefined,
+      height: typeof image.aspectRatio?.height === 'number' ? image.aspectRatio.height : undefined,
+    }));
+  }
+
+  if (type === 'app.bsky.embed.video#view') {
+    return [
+      {
+        type: 'video',
+        url: typeof embed.playlist === 'string' ? embed.playlist : undefined,
+        thumb: typeof embed.thumbnail === 'string' ? embed.thumbnail : undefined,
+        alt: typeof embed.alt === 'string' ? embed.alt : undefined,
+        width: typeof embed.aspectRatio?.width === 'number' ? embed.aspectRatio.width : undefined,
+        height: typeof embed.aspectRatio?.height === 'number' ? embed.aspectRatio.height : undefined,
+      },
+    ];
+  }
+
+  if (type === 'app.bsky.embed.external#view') {
+    const external = embed.external || {};
+    return [
+      {
+        type: 'external',
+        url: typeof external.uri === 'string' ? external.uri : undefined,
+        thumb: typeof external.thumb === 'string' ? external.thumb : undefined,
+        title: typeof external.title === 'string' ? external.title : undefined,
+        description: typeof external.description === 'string' ? external.description : undefined,
+      },
+    ];
+  }
+
+  if (type === 'app.bsky.embed.recordWithMedia#view') {
+    return extractMediaFromEmbed(embed.media);
+  }
+
+  return [];
+}
+
+async function fetchPostViewsByUri(uris: string[]): Promise<Map<string, any>> {
+  const result = new Map<string, any>();
+  const uniqueUris = [...new Set(uris.filter((uri) => typeof uri === 'string' && uri.length > 0))];
+  const pendingUris: string[] = [];
+
+  for (const uri of uniqueUris) {
+    const cached = postViewCache.get(uri);
+    if (cached && cached.expiresAt > nowMs()) {
+      result.set(uri, cached.value);
+      continue;
+    }
+    pendingUris.push(uri);
+  }
+
+  for (const chunk of chunkArray(pendingUris, 25)) {
+    if (chunk.length === 0) continue;
+    const params = new URLSearchParams();
+    for (const uri of chunk) params.append('uris', uri);
+
+    try {
+      const response = await axios.get(`${BSKY_APPVIEW_URL}/xrpc/app.bsky.feed.getPosts?${params.toString()}`, {
+        timeout: 12_000,
+      });
+      const posts = Array.isArray(response.data?.posts) ? response.data.posts : [];
+      for (const post of posts) {
+        const uri = typeof post?.uri === 'string' ? post.uri : undefined;
+        if (!uri) continue;
+        postViewCache.set(uri, {
+          value: post,
+          expiresAt: nowMs() + POST_VIEW_CACHE_TTL_MS,
+        });
+        result.set(uri, post);
+      }
+    } catch (error) {
+      console.warn('Failed to fetch post views from Bluesky appview:', error);
+    }
+  }
+
+  return result;
+}
+
+async function fetchProfilesByActor(actors: string[]): Promise<Record<string, BskyProfileView>> {
+  const uniqueActors = [...new Set(actors.map(normalizeActor).filter((actor) => actor.length > 0))];
+  const result: Record<string, BskyProfileView> = {};
+  const pendingActors: string[] = [];
+
+  for (const actor of uniqueActors) {
+    const cached = profileCache.get(actor);
+    if (cached && cached.expiresAt > nowMs()) {
+      result[actor] = cached.value;
+      continue;
+    }
+    pendingActors.push(actor);
+  }
+
+  for (const chunk of chunkArray(pendingActors, 25)) {
+    if (chunk.length === 0) continue;
+    const params = new URLSearchParams();
+    for (const actor of chunk) params.append('actors', actor);
+
+    try {
+      const response = await axios.get(`${BSKY_APPVIEW_URL}/xrpc/app.bsky.actor.getProfiles?${params.toString()}`, {
+        timeout: 12_000,
+      });
+      const profiles = Array.isArray(response.data?.profiles) ? response.data.profiles : [];
+      for (const profile of profiles) {
+        const view: BskyProfileView = {
+          did: typeof profile?.did === 'string' ? profile.did : undefined,
+          handle: typeof profile?.handle === 'string' ? profile.handle : undefined,
+          displayName: typeof profile?.displayName === 'string' ? profile.displayName : undefined,
+          avatar: typeof profile?.avatar === 'string' ? profile.avatar : undefined,
+        };
+
+        const keys = [
+          typeof view.handle === 'string' ? normalizeActor(view.handle) : '',
+          typeof view.did === 'string' ? normalizeActor(view.did) : '',
+        ].filter((key) => key.length > 0);
+
+        for (const key of keys) {
+          profileCache.set(key, { value: view, expiresAt: nowMs() + PROFILE_CACHE_TTL_MS });
+          result[key] = view;
+        }
+      }
+    } catch (error) {
+      console.warn('Failed to fetch profiles from Bluesky appview:', error);
+    }
+  }
+
+  for (const actor of uniqueActors) {
+    const cached = profileCache.get(actor);
+    if (cached && cached.expiresAt > nowMs()) {
+      result[actor] = cached.value;
+    }
+  }
+
+  return result;
+}
+
+function buildEnrichedPost(activity: ProcessedTweet, postView: any): EnrichedPost {
+  const record = postView?.record || {};
+  const author = postView?.author || {};
+  const likes = Number(postView?.likeCount) || 0;
+  const reposts = Number(postView?.repostCount) || 0;
+  const replies = Number(postView?.replyCount) || 0;
+  const quotes = Number(postView?.quoteCount) || 0;
+
+  const identifier =
+    (typeof activity.bsky_identifier === 'string' && activity.bsky_identifier.length > 0
+      ? activity.bsky_identifier
+      : typeof author.handle === 'string'
+        ? author.handle
+        : 'unknown') || 'unknown';
+
+  return {
+    bskyUri: activity.bsky_uri || '',
+    bskyCid: typeof postView?.cid === 'string' ? postView.cid : activity.bsky_cid,
+    bskyIdentifier: identifier,
+    twitterId: activity.twitter_id,
+    twitterUsername: activity.twitter_username,
+    twitterUrl: buildTwitterPostUrl(activity.twitter_username, activity.twitter_id),
+    postUrl: buildPostUrl(identifier, activity.bsky_uri),
+    createdAt:
+      (typeof record.createdAt === 'string' ? record.createdAt : undefined) ||
+      activity.created_at ||
+      (typeof postView?.indexedAt === 'string' ? postView.indexedAt : undefined),
+    text:
+      (typeof record.text === 'string' ? record.text : undefined) ||
+      activity.tweet_text ||
+      `Tweet ID: ${activity.twitter_id}`,
+    facets: Array.isArray(record.facets) ? record.facets : [],
+    author: {
+      did: typeof author.did === 'string' ? author.did : undefined,
+      handle:
+        typeof author.handle === 'string' && author.handle.length > 0 ? author.handle : activity.bsky_identifier,
+      displayName: typeof author.displayName === 'string' ? author.displayName : undefined,
+      avatar: typeof author.avatar === 'string' ? author.avatar : undefined,
+    },
+    stats: {
+      likes,
+      reposts,
+      replies,
+      quotes,
+      engagement: likes + reposts + replies + quotes,
+    },
+    media: extractMediaFromEmbed(postView?.embed),
+  };
+}
 
 // In-memory state for triggers and scheduling
 let lastCheckTime = Date.now();
@@ -121,7 +407,7 @@ app.get('/api/mappings', authenticateToken, (_req, res) => {
 });
 
 app.post('/api/mappings', authenticateToken, (req, res) => {
-  const { twitterUsernames, bskyIdentifier, bskyPassword, bskyServiceUrl, owner } = req.body;
+  const { twitterUsernames, bskyIdentifier, bskyPassword, bskyServiceUrl, owner, groupName, groupEmoji } = req.body;
   const config = getConfig();
 
   // Handle both array and comma-separated string
@@ -135,6 +421,9 @@ app.post('/api/mappings', authenticateToken, (req, res) => {
       .filter((u) => u.length > 0);
   }
 
+  const normalizedGroupName = typeof groupName === 'string' ? groupName.trim() : '';
+  const normalizedGroupEmoji = typeof groupEmoji === 'string' ? groupEmoji.trim() : '';
+
   const newMapping = {
     id: Math.random().toString(36).substring(7),
     twitterUsernames: usernames,
@@ -143,6 +432,8 @@ app.post('/api/mappings', authenticateToken, (req, res) => {
     bskyServiceUrl: bskyServiceUrl || 'https://bsky.social',
     enabled: true,
     owner,
+    groupName: normalizedGroupName || undefined,
+    groupEmoji: normalizedGroupEmoji || undefined,
   };
 
   config.mappings.push(newMapping);
@@ -152,7 +443,7 @@ app.post('/api/mappings', authenticateToken, (req, res) => {
 
 app.put('/api/mappings/:id', authenticateToken, (req, res) => {
   const { id } = req.params;
-  const { twitterUsernames, bskyIdentifier, bskyPassword, bskyServiceUrl, owner } = req.body;
+  const { twitterUsernames, bskyIdentifier, bskyPassword, bskyServiceUrl, owner, groupName, groupEmoji } = req.body;
   const config = getConfig();
 
   const index = config.mappings.findIndex((m) => m.id === id);
@@ -175,6 +466,18 @@ app.put('/api/mappings/:id', authenticateToken, (req, res) => {
     }
   }
 
+  let nextGroupName = existingMapping.groupName;
+  if (groupName !== undefined) {
+    const normalizedGroupName = typeof groupName === 'string' ? groupName.trim() : '';
+    nextGroupName = normalizedGroupName || undefined;
+  }
+
+  let nextGroupEmoji = existingMapping.groupEmoji;
+  if (groupEmoji !== undefined) {
+    const normalizedGroupEmoji = typeof groupEmoji === 'string' ? groupEmoji.trim() : '';
+    nextGroupEmoji = normalizedGroupEmoji || undefined;
+  }
+
   const updatedMapping = {
     ...existingMapping,
     twitterUsernames: usernames,
@@ -183,6 +486,8 @@ app.put('/api/mappings/:id', authenticateToken, (req, res) => {
     bskyPassword: bskyPassword || existingMapping.bskyPassword,
     bskyServiceUrl: bskyServiceUrl || existingMapping.bskyServiceUrl,
     owner: owner || existingMapping.owner,
+    groupName: nextGroupName,
+    groupEmoji: nextGroupEmoji,
   };
 
   config.mappings[index] = updatedMapping;
@@ -409,6 +714,45 @@ app.get('/api/recent-activity', authenticateToken, (req, res) => {
   const limit = req.query.limit ? Number(req.query.limit) : 50;
   const tweets = dbService.getRecentProcessedTweets(limit);
   res.json(tweets);
+});
+
+app.post('/api/bsky/profiles', authenticateToken, async (req, res) => {
+  const actors = Array.isArray(req.body?.actors)
+    ? req.body.actors.filter((actor: unknown) => typeof actor === 'string')
+    : [];
+
+  if (actors.length === 0) {
+    res.json({});
+    return;
+  }
+
+  const limitedActors = actors.slice(0, 200);
+  const profiles = await fetchProfilesByActor(limitedActors);
+  res.json(profiles);
+});
+
+app.get('/api/posts/enriched', authenticateToken, async (req, res) => {
+  const requestedLimit = req.query.limit ? Number(req.query.limit) : 24;
+  const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 80)) : 24;
+
+  const recent = dbService.getRecentProcessedTweets(limit * 4);
+  const migratedWithUri = recent.filter((row) => row.status === 'migrated' && row.bsky_uri);
+
+  const deduped: ProcessedTweet[] = [];
+  const seenUris = new Set<string>();
+  for (const row of migratedWithUri) {
+    const uri = row.bsky_uri;
+    if (!uri || seenUris.has(uri)) continue;
+    seenUris.add(uri);
+    deduped.push(row);
+    if (deduped.length >= limit) break;
+  }
+
+  const uris = deduped.map((row) => row.bsky_uri).filter((uri): uri is string => typeof uri === 'string');
+  const postViewsByUri = await fetchPostViewsByUri(uris);
+  const enriched = deduped.map((row) => buildEnrichedPost(row, row.bsky_uri ? postViewsByUri.get(row.bsky_uri) : null));
+
+  res.json(enriched);
 });
 
 // Export for use by index.ts

@@ -224,7 +224,7 @@ export const dbService = {
   },
 
   getRecentProcessedTweets(limit = 50): ProcessedTweet[] {
-    const stmt = db.prepare('SELECT * FROM processed_tweets ORDER BY created_at DESC LIMIT ?');
+    const stmt = db.prepare('SELECT * FROM processed_tweets ORDER BY datetime(created_at) DESC, rowid DESC LIMIT ?');
     return stmt.all(limit) as ProcessedTweet[];
   },
 

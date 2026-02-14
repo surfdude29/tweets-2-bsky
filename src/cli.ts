@@ -283,6 +283,16 @@ program
         message: 'Bluesky service URL:',
         default: 'https://bsky.social',
       },
+      {
+        type: 'input',
+        name: 'groupName',
+        message: 'Group/folder name (optional):',
+      },
+      {
+        type: 'input',
+        name: 'groupEmoji',
+        message: 'Group emoji icon (optional):',
+      },
     ]);
 
     const usernames = answers.twitterUsernames
@@ -296,6 +306,8 @@ program
       bskyIdentifier: answers.bskyIdentifier,
       bskyPassword: answers.bskyPassword,
       bskyServiceUrl: answers.bskyServiceUrl,
+      groupName: answers.groupName?.trim() || undefined,
+      groupEmoji: answers.groupEmoji?.trim() || undefined,
     });
     console.log('Mapping added successfully.');
   });
@@ -338,6 +350,18 @@ program
         message: 'Bluesky service URL:',
         default: mapping.bskyServiceUrl || 'https://bsky.social',
       },
+      {
+        type: 'input',
+        name: 'groupName',
+        message: 'Group/folder name (optional):',
+        default: mapping.groupName || '',
+      },
+      {
+        type: 'input',
+        name: 'groupEmoji',
+        message: 'Group emoji icon (optional):',
+        default: mapping.groupEmoji || '',
+      },
     ]);
 
     const usernames = answers.twitterUsernames
@@ -357,6 +381,8 @@ program
       twitterUsernames: usernames,
       bskyIdentifier: answers.bskyIdentifier,
       bskyServiceUrl: answers.bskyServiceUrl,
+      groupName: answers.groupName?.trim() || undefined,
+      groupEmoji: answers.groupEmoji?.trim() || undefined,
     };
 
     if (answers.bskyPassword && answers.bskyPassword.trim().length > 0) {
@@ -384,6 +410,7 @@ program
         owner: mapping.owner || 'System',
         twitter: mapping.twitterUsernames.join(', '),
         bsky: mapping.bskyIdentifier,
+        group: `${mapping.groupEmoji || '📁'} ${mapping.groupName || 'Ungrouped'}`,
         enabled: mapping.enabled,
       })),
     );

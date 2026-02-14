@@ -47,6 +47,10 @@
     @apply min-h-screen;
   }
 
+  html {
+    scroll-behavior: smooth;
+  }
+
   body {
     @apply bg-background text-foreground antialiased;
     font-family: 'Space Grotesk', system-ui, sans-serif;
@@ -63,10 +67,28 @@
       radial-gradient(circle at 85% 0%, rgba(255, 255, 255, 0.06) 0, transparent 24%),
       linear-gradient(145deg, rgba(11, 11, 11, 0.95), rgba(18, 18, 18, 0.86));
   }
+
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+
+    *,
+    *::before,
+    *::after {
+      animation-duration: 1ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 1ms !important;
+    }
+  }
 }
 
 @layer components {
   .panel-grid {
     @apply grid gap-6 lg:grid-cols-[2fr_1fr];
+  }
+
+  .interactive-row {
+    @apply transition-colors duration-200 motion-reduce:transition-none hover:bg-muted/45;
   }
 }
