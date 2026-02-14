@@ -1,5 +1,5 @@
 import { execSync, spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,7 +7,7 @@ import axios from 'axios';
 import bcrypt from 'bcryptjs';
 import cors from 'cors';
 import express from 'express';
-import jwt from 'jsonwebtoken';
+import jwt, { type SignOptions } from 'jsonwebtoken';
 import { deleteAllPosts } from './bsky.js';
 import {
   ADMIN_USER_PERMISSIONS,
@@ -29,8 +29,10 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = (process.env.HOST || process.env.BIND_HOST || '0.0.0.0').trim() || '0.0.0.0';
-const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret';
 const APP_ROOT_DIR = path.join(__dirname, '..');
+const JWT_SECRET_FILE_PATH = path.join(APP_ROOT_DIR, 'data', '.jwt-secret');
+const jwtSecretFromEnv = process.env.JWT_SECRET?.trim();
+const JWT_EXPIRES_IN = ((process.env.JWT_EXPIRES_IN || '30d').trim() || '30d') as SignOptions['expiresIn'];
 const WEB_DIST_DIR = path.join(APP_ROOT_DIR, 'web', 'dist');
 const LEGACY_PUBLIC_DIR = path.join(APP_ROOT_DIR, 'public');
 const PACKAGE_JSON_PATH = path.join(APP_ROOT_DIR, 'package.json');
@@ -43,6 +45,65 @@ const PROFILE_CACHE_TTL_MS = 5 * 60_000;
 const RESERVED_UNGROUPED_KEY = 'ungrouped';
 const SERVER_STARTED_AT = Date.now();
 const PASSWORD_MIN_LENGTH = 8;
+const AUTH_RATE_WINDOW_MS = 15 * 60 * 1000;
+const AUTH_RATE_MAX_ATTEMPTS = 30;
+const APPVIEW_POST_CHUNK_SIZE = 10;
+const APPVIEW_PROFILE_CHUNK_SIZE = 25;
+const APPVIEW_MAX_ATTEMPTS = 2;
+const APPVIEW_RETRY_DELAY_MS = 700;
+
+function loadPersistedJwtSecret(): string | undefined {
+  if (!fs.existsSync(JWT_SECRET_FILE_PATH)) {
+    return undefined;
+  }
+
+  try {
+    const secret = fs.readFileSync(JWT_SECRET_FILE_PATH, 'utf8').trim();
+    if (secret.length >= 32) {
+      return secret;
+    }
+    console.warn(`⚠️ Ignoring weak JWT secret in ${JWT_SECRET_FILE_PATH}. Regenerating.`);
+    return undefined;
+  } catch (error) {
+    console.warn(
+      `⚠️ Failed reading JWT secret file at ${JWT_SECRET_FILE_PATH}: ${(error as Error).message}. Regenerating.`,
+    );
+    return undefined;
+  }
+}
+
+function persistJwtSecret(secret: string): void {
+  fs.mkdirSync(path.dirname(JWT_SECRET_FILE_PATH), { recursive: true });
+  fs.writeFileSync(JWT_SECRET_FILE_PATH, `${secret}\n`, { mode: 0o600 });
+  try {
+    fs.chmodSync(JWT_SECRET_FILE_PATH, 0o600);
+  } catch {
+    // Best effort on non-POSIX filesystems.
+  }
+}
+
+function resolveJwtSecret(): string {
+  if (jwtSecretFromEnv) {
+    if (jwtSecretFromEnv.length < 32) {
+      console.warn('⚠️ JWT_SECRET is shorter than 32 characters. Use a longer value for stronger signing security.');
+    }
+    return jwtSecretFromEnv;
+  }
+
+  const persisted = loadPersistedJwtSecret();
+  if (persisted) {
+    return persisted;
+  }
+
+  const generated = randomBytes(48).toString('hex');
+  persistJwtSecret(generated);
+  console.warn(
+    `⚠️ JWT_SECRET not set. Generated persistent signing secret at ${JWT_SECRET_FILE_PATH}. Keep this file private.`,
+  );
+  return generated;
+}
+
+const JWT_SECRET = resolveJwtSecret();
 
 interface CacheEntry<T> {
   value: T;
@@ -152,6 +213,78 @@ function chunkArray<T>(items: T[], size: number): T[][] {
 function nowMs() {
   return Date.now();
 }
+
+const parseAllowedOrigins = (): Set<string> => {
+  const raw = process.env.CORS_ALLOWED_ORIGINS || process.env.CORS_ORIGIN || '';
+  const origins = raw
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  return new Set(origins);
+};
+
+const allowedOrigins = parseAllowedOrigins();
+
+interface RateLimitBucket {
+  count: number;
+  resetAt: number;
+}
+
+const authRateBuckets = new Map<string, RateLimitBucket>();
+
+const getRequestIp = (req: any): string => {
+  const forwarded = req.headers?.['x-forwarded-for'];
+  if (typeof forwarded === 'string' && forwarded.trim().length > 0) {
+    const [first] = forwarded.split(',');
+    if (first && first.trim().length > 0) {
+      return first.trim();
+    }
+  }
+  if (typeof req.ip === 'string' && req.ip.length > 0) {
+    return req.ip;
+  }
+  if (typeof req.socket?.remoteAddress === 'string' && req.socket.remoteAddress.length > 0) {
+    return req.socket.remoteAddress;
+  }
+  return 'unknown';
+};
+
+const authRateLimiter = (req: any, res: any, next: any) => {
+  const now = nowMs();
+  if (authRateBuckets.size > 5000) {
+    for (const [bucketKey, bucketValue] of authRateBuckets.entries()) {
+      if (bucketValue.resetAt <= now) {
+        authRateBuckets.delete(bucketKey);
+      }
+    }
+  }
+
+  const ip = getRequestIp(req);
+  const key = `auth:${ip}`;
+  const bucket = authRateBuckets.get(key);
+
+  if (!bucket || bucket.resetAt <= now) {
+    authRateBuckets.set(key, {
+      count: 1,
+      resetAt: now + AUTH_RATE_WINDOW_MS,
+    });
+    next();
+    return;
+  }
+
+  if (bucket.count >= AUTH_RATE_MAX_ATTEMPTS) {
+    const retryAfterSeconds = Math.max(1, Math.ceil((bucket.resetAt - now) / 1000));
+    res.setHeader('Retry-After', String(retryAfterSeconds));
+    res.status(429).json({
+      error: `Too many authentication attempts. Try again in about ${retryAfterSeconds} seconds.`,
+    });
+    return;
+  }
+
+  bucket.count += 1;
+  authRateBuckets.set(key, bucket);
+  next();
+};
 
 function buildPostUrl(identifier: string, uri?: string): string | undefined {
   if (!uri) return undefined;
@@ -317,6 +450,82 @@ function extractMediaFromEmbed(embed: any): EnrichedPostMedia[] {
   return [];
 }
 
+const RETRYABLE_APPVIEW_CODES = new Set(['ETIMEDOUT', 'ECONNABORTED', 'ECONNRESET', 'ENOTFOUND', 'EAI_AGAIN']);
+
+function describeAxiosError(error: unknown): string {
+  if (axios.isAxiosError(error)) {
+    const details = [error.message];
+    const status = error.response?.status;
+    const code = error.code;
+    const causeCode =
+      typeof (error as { cause?: { code?: unknown } }).cause?.code === 'string'
+        ? (error as { cause?: { code?: string } }).cause?.code
+        : undefined;
+
+    if (typeof status === 'number') {
+      details.push(`status=${status}`);
+    }
+    if (typeof code === 'string') {
+      details.push(`code=${code}`);
+    }
+    if (typeof causeCode === 'string' && causeCode !== code) {
+      details.push(`cause=${causeCode}`);
+    }
+    return details.join(', ');
+  }
+
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error);
+}
+
+function isRetryableAppviewError(error: unknown): boolean {
+  if (!axios.isAxiosError(error)) {
+    return false;
+  }
+
+  const status = error.response?.status;
+  if (typeof status === 'number' && (status >= 500 || status === 429)) {
+    return true;
+  }
+
+  const code = error.code;
+  if (typeof code === 'string' && RETRYABLE_APPVIEW_CODES.has(code)) {
+    return true;
+  }
+
+  const causeCode = (error as { cause?: { code?: unknown } }).cause?.code;
+  if (typeof causeCode === 'string' && RETRYABLE_APPVIEW_CODES.has(causeCode)) {
+    return true;
+  }
+
+  return false;
+}
+
+const sleep = (durationMs: number) => new Promise((resolve) => setTimeout(resolve, durationMs));
+
+async function fetchAppview(pathname: string, params: URLSearchParams, context: string): Promise<any | null> {
+  const url = `${BSKY_APPVIEW_URL}${pathname}?${params.toString()}`;
+  for (let attempt = 1; attempt <= APPVIEW_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      const response = await axios.get(url, { timeout: 12_000 });
+      return response.data;
+    } catch (error) {
+      const retryable = isRetryableAppviewError(error);
+      const canRetry = retryable && attempt < APPVIEW_MAX_ATTEMPTS;
+      console.warn(
+        `[AppView] ${context} failed (attempt ${attempt}/${APPVIEW_MAX_ATTEMPTS}): ${describeAxiosError(error)}${canRetry ? '. Retrying...' : ''}`,
+      );
+      if (!canRetry) {
+        return null;
+      }
+      await sleep(APPVIEW_RETRY_DELAY_MS * attempt);
+    }
+  }
+  return null;
+}
+
 async function fetchPostViewsByUri(uris: string[]): Promise<Map<string, any>> {
   const result = new Map<string, any>();
   const uniqueUris = [...new Set(uris.filter((uri) => typeof uri === 'string' && uri.length > 0))];
@@ -331,27 +540,29 @@ async function fetchPostViewsByUri(uris: string[]): Promise<Map<string, any>> {
     pendingUris.push(uri);
   }
 
-  for (const chunk of chunkArray(pendingUris, 25)) {
+  for (const chunk of chunkArray(pendingUris, APPVIEW_POST_CHUNK_SIZE)) {
     if (chunk.length === 0) continue;
     const params = new URLSearchParams();
     for (const uri of chunk) params.append('uris', uri);
 
-    try {
-      const response = await axios.get(`${BSKY_APPVIEW_URL}/xrpc/app.bsky.feed.getPosts?${params.toString()}`, {
-        timeout: 12_000,
+    const responseData = await fetchAppview(
+      '/xrpc/app.bsky.feed.getPosts',
+      params,
+      `getPosts chunk=${chunk.length}`,
+    );
+    if (!responseData) {
+      continue;
+    }
+
+    const posts = Array.isArray(responseData.posts) ? responseData.posts : [];
+    for (const post of posts) {
+      const uri = typeof post?.uri === 'string' ? post.uri : undefined;
+      if (!uri) continue;
+      postViewCache.set(uri, {
+        value: post,
+        expiresAt: nowMs() + POST_VIEW_CACHE_TTL_MS,
       });
-      const posts = Array.isArray(response.data?.posts) ? response.data.posts : [];
-      for (const post of posts) {
-        const uri = typeof post?.uri === 'string' ? post.uri : undefined;
-        if (!uri) continue;
-        postViewCache.set(uri, {
-          value: post,
-          expiresAt: nowMs() + POST_VIEW_CACHE_TTL_MS,
-        });
-        result.set(uri, post);
-      }
-    } catch (error) {
-      console.warn('Failed to fetch post views from Bluesky appview:', error);
+      result.set(uri, post);
     }
   }
 
@@ -372,36 +583,38 @@ async function fetchProfilesByActor(actors: string[]): Promise<Record<string, Bs
     pendingActors.push(actor);
   }
 
-  for (const chunk of chunkArray(pendingActors, 25)) {
+  for (const chunk of chunkArray(pendingActors, APPVIEW_PROFILE_CHUNK_SIZE)) {
     if (chunk.length === 0) continue;
     const params = new URLSearchParams();
     for (const actor of chunk) params.append('actors', actor);
 
-    try {
-      const response = await axios.get(`${BSKY_APPVIEW_URL}/xrpc/app.bsky.actor.getProfiles?${params.toString()}`, {
-        timeout: 12_000,
-      });
-      const profiles = Array.isArray(response.data?.profiles) ? response.data.profiles : [];
-      for (const profile of profiles) {
-        const view: BskyProfileView = {
-          did: typeof profile?.did === 'string' ? profile.did : undefined,
-          handle: typeof profile?.handle === 'string' ? profile.handle : undefined,
-          displayName: typeof profile?.displayName === 'string' ? profile.displayName : undefined,
-          avatar: typeof profile?.avatar === 'string' ? profile.avatar : undefined,
-        };
+    const responseData = await fetchAppview(
+      '/xrpc/app.bsky.actor.getProfiles',
+      params,
+      `getProfiles chunk=${chunk.length}`,
+    );
+    if (!responseData) {
+      continue;
+    }
 
-        const keys = [
-          typeof view.handle === 'string' ? normalizeActor(view.handle) : '',
-          typeof view.did === 'string' ? normalizeActor(view.did) : '',
-        ].filter((key) => key.length > 0);
+    const profiles = Array.isArray(responseData.profiles) ? responseData.profiles : [];
+    for (const profile of profiles) {
+      const view: BskyProfileView = {
+        did: typeof profile?.did === 'string' ? profile.did : undefined,
+        handle: typeof profile?.handle === 'string' ? profile.handle : undefined,
+        displayName: typeof profile?.displayName === 'string' ? profile.displayName : undefined,
+        avatar: typeof profile?.avatar === 'string' ? profile.avatar : undefined,
+      };
 
-        for (const key of keys) {
-          profileCache.set(key, { value: view, expiresAt: nowMs() + PROFILE_CACHE_TTL_MS });
-          result[key] = view;
-        }
+      const keys = [
+        typeof view.handle === 'string' ? normalizeActor(view.handle) : '',
+        typeof view.did === 'string' ? normalizeActor(view.did) : '',
+      ].filter((key) => key.length > 0);
+
+      for (const key of keys) {
+        profileCache.set(key, { value: view, expiresAt: nowMs() + PROFILE_CACHE_TTL_MS });
+        result[key] = view;
       }
-    } catch (error) {
-      console.warn('Failed to fetch profiles from Bluesky appview:', error);
     }
   }
 
@@ -508,7 +721,21 @@ function requestImmediateSchedulerPass(): void {
   signalSchedulerWake();
 }
 
-app.use(cors());
+if (allowedOrigins.size === 0) {
+  app.use(cors());
+} else {
+  app.use(
+    cors({
+      origin: (origin, callback) => {
+        if (!origin) {
+          callback(null, true);
+          return;
+        }
+        callback(null, allowedOrigins.has(origin));
+      },
+    }),
+  );
+}
 app.use(express.json());
 
 app.use(express.static(staticAssetsDir));
@@ -631,7 +858,7 @@ const issueTokenForUser = (user: WebUser): string =>
       username: user.username,
     },
     JWT_SECRET,
-    { expiresIn: '24h' },
+    { expiresIn: JWT_EXPIRES_IN },
   );
 
 const findUserByIdentifier = (config: AppConfig, identifier: string): WebUser | undefined => {
@@ -1062,7 +1289,7 @@ app.get('/api/auth/bootstrap-status', (_req, res) => {
   res.json({ bootstrapOpen: config.users.length === 0 });
 });
 
-app.post('/api/register', async (req, res) => {
+app.post('/api/register', authRateLimiter, async (req, res) => {
   const config = getConfig();
   if (config.users.length > 0) {
     res.status(403).json({ error: 'Registration is disabled. Ask an admin to create your account.' });
@@ -1117,7 +1344,7 @@ app.post('/api/register', async (req, res) => {
   res.json({ success: true });
 });
 
-app.post('/api/login', async (req, res) => {
+app.post('/api/login', authRateLimiter, async (req, res) => {
   const password = req.body?.password;
   const identifier = normalizeOptionalString(req.body?.identifier) ?? normalizeOptionalString(req.body?.email);
   if (!identifier || typeof password !== 'string') {

@@ -2029,6 +2029,26 @@ async function importHistory(
 const activeTasks = new Map<string, Promise<void>>();
 const DEFAULT_BACKFILL_ACCOUNT_TIMEOUT_MS = 2 * 60 * 1000;
 
+const describeError = (error: unknown): string => {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === 'string') {
+    return error;
+  }
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+};
+
+const getMappingLogPrefix = (mapping: AccountMapping): string => {
+  const owner = mapping.owner?.trim() || 'unknown-owner';
+  const creator = mapping.createdByUserId || 'unknown-user';
+  return `[mapping:${mapping.id}] [owner:${owner}] [creator:${creator}] [target:${mapping.bskyIdentifier}]`;
+};
+
 const resolveBackfillAccountTimeoutMs = (): number => {
   const raw = Number(process.env.BACKFILL_ACCOUNT_TIMEOUT_MS);
   if (Number.isFinite(raw) && raw >= 15_000) {
@@ -2055,14 +2075,26 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMes
 }
 
 async function runAccountTask(mapping: AccountMapping, backfillRequest?: PendingBackfill, dryRun = false) {
-  if (activeTasks.has(mapping.id)) return; // Already running
+  const logPrefix = getMappingLogPrefix(mapping);
+  const existingTask = activeTasks.get(mapping.id);
+  if (existingTask) {
+    console.log(`${logPrefix} ⏳ Task already in progress. Reusing active run.`);
+    return existingTask;
+  }
 
   const task = (async () => {
+    let checkedSources = 0;
+    let sourceErrors = 0;
+    const taskMode = backfillRequest ? 'backfill' : 'scheduled';
+    console.log(
+      `${logPrefix} ▶️ Starting ${taskMode} task for ${mapping.twitterUsernames.length} source account(s).`,
+    );
+
     try {
       const backfillReq = backfillRequest ?? getPendingBackfills().find((b) => b.id === mapping.id);
 
       if (mapping.twitterUsernames.length === 0) {
-        console.warn(`[${mapping.bskyIdentifier}] ⚠️ No Twitter usernames configured. Skipping mapping.`);
+        console.warn(`${logPrefix} ⚠️ No Twitter usernames configured. Skipping mapping.`);
         if (backfillReq) {
           clearBackfill(mapping.id, backfillReq.requestId);
           updateAppStatus({
@@ -2080,8 +2112,8 @@ async function runAccountTask(mapping: AccountMapping, backfillRequest?: Pending
 
       const agent = await getAgent(mapping);
       if (!agent) {
+        console.warn(`${logPrefix} ⚠️ Unable to authenticate Bluesky account. Skipping task.`);
         if (backfillReq) {
-          console.warn(`[${mapping.bskyIdentifier}] ⚠️ Backfill aborted: unable to authenticate Bluesky account.`);
           clearBackfill(mapping.id, backfillReq.requestId);
           updateAppStatus({
             state: 'idle',
@@ -2104,7 +2136,7 @@ async function runAccountTask(mapping: AccountMapping, backfillRequest?: Pending
         const accountCount = mapping.twitterUsernames.length;
         const estimatedTotalTweets = accountCount * limit;
         console.log(
-          `[${mapping.bskyIdentifier}] Running backfill for ${mapping.twitterUsernames.length} accounts (limit ${limit})...`,
+          `${logPrefix} Running backfill for ${mapping.twitterUsernames.length} accounts (limit ${limit})...`,
         );
         updateAppStatus({
           state: 'backfilling',
@@ -2125,11 +2157,12 @@ async function runAccountTask(mapping: AccountMapping, backfillRequest?: Pending
             ? true
             : getPendingBackfills().some((b) => b.id === mapping.id && b.requestId === backfillReq.requestId);
           if (!stillPending) {
-            console.log(`[${mapping.bskyIdentifier}] 🛑 Backfill request replaced; stopping.`);
+            console.log(`${logPrefix} 🛑 Backfill request replaced; stopping.`);
             break;
           }
 
           try {
+            checkedSources += 1;
             updateAppStatus({
               state: 'backfilling',
               currentAccount: twitterUsername,
@@ -2154,7 +2187,10 @@ async function runAccountTask(mapping: AccountMapping, backfillRequest?: Pending
               backfillRequestId: backfillReq.requestId,
             });
           } catch (err) {
-            console.error(`❌ Error backfilling ${twitterUsername}:`, err);
+            sourceErrors += 1;
+            console.error(
+              `${logPrefix} ❌ Error backfilling @${twitterUsername}: ${describeError(err)}`,
+            );
           }
         }
         clearBackfill(mapping.id, backfillReq.requestId);
@@ -2166,7 +2202,7 @@ async function runAccountTask(mapping: AccountMapping, backfillRequest?: Pending
           backfillMappingId: undefined,
           backfillRequestId: undefined,
         });
-        console.log(`[${mapping.bskyIdentifier}] Backfill complete.`);
+        console.log(`${logPrefix} Backfill complete.`);
       } else {
         updateAppStatus({ backfillMappingId: undefined, backfillRequestId: undefined });
 
@@ -2176,6 +2212,7 @@ async function runAccountTask(mapping: AccountMapping, backfillRequest?: Pending
 
         for (const twitterUsername of mapping.twitterUsernames) {
           try {
+            checkedSources += 1;
             console.log(`[${twitterUsername}] 🏁 Starting check for new tweets...`);
             updateAppStatus({
               state: 'checking',
@@ -2197,14 +2234,19 @@ async function runAccountTask(mapping: AccountMapping, backfillRequest?: Pending
             console.log(`[${twitterUsername}] 📥 Fetched ${tweets.length} tweets.`);
             await processTweets(agent, twitterUsername, mapping.bskyIdentifier, tweets, dryRun);
           } catch (err) {
-            console.error(`❌ Error checking ${twitterUsername}:`, err);
+            sourceErrors += 1;
+            console.error(`${logPrefix} ❌ Error checking @${twitterUsername}: ${describeError(err)}`);
           }
         }
       }
     } catch (err) {
-      console.error(`Error processing mapping ${mapping.bskyIdentifier}:`, err);
+      sourceErrors += 1;
+      console.error(`${logPrefix} ❌ Mapping task failed: ${describeError(err)}`);
     } finally {
       activeTasks.delete(mapping.id);
+      console.log(
+        `${logPrefix} ✅ Task finished. Sources checked=${checkedSources}, source errors=${sourceErrors}.`,
+      );
     }
   })();
 

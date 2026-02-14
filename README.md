@@ -137,6 +137,11 @@ Open: [http://localhost:3000](http://localhost:3000)
 cat > .env <<'EOF'
 PORT=3000
 JWT_SECRET=replace-with-a-strong-random-secret
+# Optional: auth token lifetime (jsonwebtoken format), default is 30d.
+# JWT_EXPIRES_IN=30d
+# Optional: comma-separated browser origins allowed to call the API.
+# Leave unset to allow all origins (default/backward-compatible).
+# CORS_ALLOWED_ORIGINS=https://your-tailnet-host.ts.net,https://localhost:3000
 EOF
 ```
 
@@ -301,7 +306,8 @@ Local files:
 
 - `config.json`: mappings, credentials, users, app settings (sensitive; do not share)
 - `data/database.sqlite`: processed tweet history and metadata
-- `.env`: runtime environment variables (`PORT`, `JWT_SECRET`, optional overrides)
+- `data/.jwt-secret`: auto-generated local JWT signing key when `JWT_SECRET` is not set (sensitive; keep private)
+- `.env`: runtime environment variables (`PORT`, `JWT_SECRET`, `JWT_EXPIRES_IN`, optional overrides)
 
 Security notes:
 
@@ -312,7 +318,10 @@ Security notes:
 - admins can grant fine-grained permissions (view all mappings, manage groups, queue backfills, run-now, etc.)
 - only admins can view or edit Twitter/AI provider credentials
 - admin user management never exposes other users' password hashes in the UI
-- if `JWT_SECRET` is missing, server falls back to an insecure default; set your own secret in `.env`
+- if `JWT_SECRET` is missing, server generates and persists a strong secret in `data/.jwt-secret` so sessions survive restarts
+- set `JWT_SECRET` in `.env` if you prefer explicit secret management across hosts
+- auth tokens default to `30d` expiry (`JWT_EXPIRES_IN`), configurable via `.env`
+- auth endpoints (`/api/login`, `/api/register`) are rate-limited per IP to reduce brute-force risk
 - prefer Bluesky app passwords (not your full account password)
 
 ### Multi-User Access Control
