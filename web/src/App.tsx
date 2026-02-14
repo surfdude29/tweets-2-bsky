@@ -240,6 +240,7 @@ const TAB_PATHS: Record<DashboardTab, string> = {
 const ADD_ACCOUNT_STEP_COUNT = 4;
 const ADD_ACCOUNT_STEPS = ['Owner', 'Sources', 'Bluesky', 'Confirm'] as const;
 const ACCOUNT_SEARCH_MIN_SCORE = 22;
+const DEFAULT_BACKFILL_LIMIT = 15;
 
 const selectClassName =
   'flex h-10 w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2';
@@ -1378,14 +1379,7 @@ function App() {
         return;
       }
     }
-
-    const limitInput = window.prompt(`How many tweets should be backfilled for this account?`, '15');
-    if (limitInput === null) {
-      return;
-    }
-
-    const limit = Number.parseInt(limitInput, 10);
-    const safeLimit = Number.isFinite(limit) && limit > 0 ? limit : 15;
+    const safeLimit = DEFAULT_BACKFILL_LIMIT;
 
     try {
       if (mode === 'reset') {
@@ -1393,7 +1387,12 @@ function App() {
       }
 
       await axios.post(`/api/backfill/${mappingId}`, { limit: safeLimit }, { headers: authHeaders });
-      showNotice('success', mode === 'reset' ? 'Cache reset and backfill queued.' : 'Backfill queued.');
+      showNotice(
+        'success',
+        mode === 'reset'
+          ? `Cache reset and backfill queued (${safeLimit} tweets).`
+          : `Backfill queued (${safeLimit} tweets).`,
+      );
       await fetchStatus();
     } catch (error) {
       handleAuthFailure(error, 'Failed to queue backfill.');

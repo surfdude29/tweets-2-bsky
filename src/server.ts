@@ -812,6 +812,17 @@ app.post('/api/run-now', authenticateToken, (_req, res) => {
   res.json({ success: true, message: 'Check triggered' });
 });
 
+app.post('/api/backfill/clear-all', authenticateToken, requireAdmin, (_req, res) => {
+  pendingBackfills = [];
+  updateAppStatus({
+    state: 'idle',
+    message: 'All backfills cleared',
+    backfillMappingId: undefined,
+    backfillRequestId: undefined,
+  });
+  res.json({ success: true, message: 'All backfills cleared' });
+});
+
 app.post('/api/backfill/:id', authenticateToken, requireAdmin, (req, res) => {
   const { id } = req.params;
   const { limit } = req.body;
@@ -848,17 +859,6 @@ app.delete('/api/backfill/:id', authenticateToken, (req, res) => {
   const { id } = req.params;
   pendingBackfills = pendingBackfills.filter((bid) => bid.id !== id);
   res.json({ success: true });
-});
-
-app.post('/api/backfill/clear-all', authenticateToken, requireAdmin, (_req, res) => {
-  pendingBackfills = [];
-  updateAppStatus({
-    state: 'idle',
-    message: 'All backfills cleared',
-    backfillMappingId: undefined,
-    backfillRequestId: undefined,
-  });
-  res.json({ success: true, message: 'All backfills cleared' });
 });
 
 // --- Config Management Routes ---
