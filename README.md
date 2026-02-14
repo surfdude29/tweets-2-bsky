@@ -1,24 +1,81 @@
-# Tweets-2-Bsky
+# tweets-2-bsky
 
-Crosspost Tweets/X posts to Bluesky with support for threads, media, and multiple account mappings.
+Crosspost posts from Twitter/X to Bluesky with thread support, media handling, account mapping, and a web dashboard.
 
-## Features
+## Quick Start (Easy Mode)
 
-- Automated crossposting from Twitter/X to Bluesky
-- Thread-aware posting
-- Video/GIF and high-quality image handling
-- Multi-source account mappings per Bluesky target
-- React + Vite web dashboard (auto light/dark mode)
-- Native-styled "Already Posted" feed in dashboard
-- Full CLI workflows for CLI-only/cronjob usage
+If you are comfortable with terminal basics but do not want to manage PM2 manually, use the installer script.
+
+### 1) Clone the repo
+
+```bash
+git clone https://github.com/j4ckxyz/tweets-2-bsky
+cd tweets-2-bsky
+```
+
+### 2) Run install + background start
+
+```bash
+chmod +x install.sh
+./install.sh
+```
+
+What this does by default:
+
+- installs dependencies
+- builds server + web dashboard
+- creates/updates `.env` with sensible defaults (`PORT=3000`, generated `JWT_SECRET` if missing)
+- starts in the background
+  - uses PM2 if installed
+  - otherwise uses `nohup`
+- prints your local web URL (for example `http://localhost:3000`)
+
+### 3) Open the dashboard
+
+Open the printed URL in your browser, then:
+
+1. Register the first user (this user becomes admin).
+2. Add Twitter cookies in Settings.
+3. Add at least one mapping.
+4. Click `Run now`.
+
+### Useful installer commands
+
+```bash
+./install.sh --no-start
+./install.sh --start-only
+./install.sh --stop
+./install.sh --status
+./install.sh --port 3100
+```
+
+If you prefer full manual setup, skip to [Manual Setup](#manual-setup-technical).
+
+## What This Project Does
+
+- crossposts tweets and threads to Bluesky
+- handles images, videos, GIFs, quote tweets, and link cards
+- stores processed history in SQLite to avoid reposting
+- supports multiple Twitter source usernames per Bluesky target
+- provides both:
+  - web dashboard workflows
+  - CLI workflows (including cron-friendly mode)
 
 ## Requirements
 
 - Node.js 22+
 - npm
-- Git
+- git
 
-## Fast Setup (Web + CLI)
+Optional but recommended:
+
+- PM2 (for managed background runtime)
+- Chrome/Chromium (used for some quote-tweet screenshot fallbacks)
+- build tools for native modules (`better-sqlite3`) if your platform needs source compilation
+
+## Manual Setup (Technical)
+
+### Standard run (foreground)
 
 ```bash
 git clone https://github.com/j4ckxyz/tweets-2-bsky
@@ -30,24 +87,143 @@ npm start
 
 Open: [http://localhost:3000](http://localhost:3000)
 
-Notes:
-- `npm install` automatically rebuilds native modules (including `better-sqlite3`) for your active Node version.
-- If you switch Node versions later, run `npm run rebuild:native`.
+### Set environment values explicitly
 
-## CLI-Only Setup
+```bash
+cat > .env <<'EOF'
+PORT=3000
+JWT_SECRET=replace-with-a-strong-random-secret
+EOF
+```
 
-1. Configure Twitter cookies:
-   ```bash
-   npm run cli -- setup-twitter
-   ```
-2. Add mapping(s):
-   ```bash
-   npm run cli -- add-mapping
-   ```
-3. Run one sync cycle now:
-   ```bash
-   npm run cli -- run-now
-   ```
+### Rebuild native modules after Node version changes
+
+```bash
+npm run rebuild:native
+npm run build
+```
+
+## First-Time Setup via CLI (Alternative to Web Forms)
+
+```bash
+npm run cli -- setup-twitter
+npm run cli -- add-mapping
+npm run cli -- run-now
+```
+
+## Recommended Command Examples
+
+Always invoke CLI commands as:
+
+```bash
+npm run cli -- <command>
+```
+
+### Status and basic operations
+
+```bash
+npm run cli -- status
+npm run cli -- list
+npm run cli -- recent-activity --limit 20
+```
+
+### Credentials and configuration
+
+```bash
+npm run cli -- setup-twitter
+npm run cli -- setup-ai
+npm run cli -- set-interval 5
+```
+
+### Mapping management
+
+```bash
+npm run cli -- add-mapping
+npm run cli -- edit-mapping <mapping-id-or-handle>
+npm run cli -- remove <mapping-id-or-handle>
+```
+
+### Running syncs
+
+```bash
+npm run cli -- run-now
+npm run cli -- run-now --dry-run
+npm run cli -- run-now --web
+```
+
+### Backfill and history import
+
+```bash
+npm run cli -- backfill <mapping-id-or-handle> --limit 50
+npm run cli -- import-history <mapping-id-or-handle> --limit 100
+npm run cli -- clear-cache <mapping-id-or-handle>
+```
+
+### Dangerous operation (admin workflow)
+
+```bash
+npm run cli -- delete-all-posts <mapping-id-or-handle>
+```
+
+### Config export/import
+
+```bash
+npm run cli -- config-export ./tweets-2-bsky-config.json
+npm run cli -- config-import ./tweets-2-bsky-config.json
+```
+
+Mapping references accept:
+
+- mapping ID
+- Bluesky handle/identifier
+- Twitter username
+
+## Cron / CLI-Only Operation
+
+Run every 5 minutes:
+
+```cron
+*/5 * * * * cd /path/to/tweets-2-bsky && /usr/bin/npm run cli -- run-now >> /tmp/tweets-2-bsky.log 2>&1
+```
+
+Run one backfill once:
+
+```bash
+npm run cli -- backfill <mapping-id-or-handle> --limit 50
+```
+
+## Background Runtime Options
+
+### Option A: use `install.sh` (recommended)
+
+```bash
+./install.sh
+./install.sh --status
+./install.sh --stop
+```
+
+### Option B: manage PM2 directly
+
+```bash
+pm2 start dist/index.js --name tweets-2-bsky
+pm2 logs tweets-2-bsky
+pm2 restart tweets-2-bsky --update-env
+pm2 save
+```
+
+### Option C: no PM2 (nohup)
+
+```bash
+mkdir -p data/runtime
+nohup npm start > data/runtime/tweets-2-bsky.log 2>&1 &
+echo $! > data/runtime/tweets-2-bsky.pid
+```
+
+Stop nohup process:
+
+```bash
+kill "$(cat data/runtime/tweets-2-bsky.pid)"
+```
 
 ## Updating
 
@@ -57,87 +233,56 @@ Use:
 ./update.sh
 ```
 
-What it does:
+`update.sh`:
+
 - pulls latest code
 - installs dependencies
 - rebuilds native modules
-- builds server + web UI
-- restarts PM2 process (if PM2 is installed)
-- preserves local `config.json` via backup/restore
+- builds server + web dashboard
+- restarts PM2 process when PM2 is available
+- preserves local `config.json` with backup/restore
 
-## CLI Commands (Feature Parity)
+## Data, Config, and Security
 
-Always use:
+Local files:
 
-```bash
-npm run cli -- <command>
-```
+- `config.json`: mappings, credentials, users, app settings (sensitive; do not share)
+- `data/database.sqlite`: processed tweet history and metadata
+- `.env`: runtime environment variables (`PORT`, `JWT_SECRET`, optional overrides)
 
-Core commands:
-- `setup-twitter`: Configure primary + backup Twitter cookies
-- `setup-ai`: Configure AI provider/API settings
-- `add-mapping`, `edit-mapping`, `remove`, `list`
-- `set-interval <minutes>`: Scheduler interval
-- `run-now [--dry-run] [--web]`: Run one cycle immediately (good for cron)
-- `backfill [mapping] --limit 15 [--dry-run] [--web]`
-- `import-history [mapping] --limit 15 [--dry-run] [--web]`
-- `clear-cache [mapping]`
-- `delete-all-posts [mapping]`
-- `recent-activity --limit 20`
-- `config-export [file]`
-- `config-import <file>`
-- `status`
+Security notes:
 
-Mapping arguments can be mapping ID, Bluesky handle, or Twitter username.
+- first registered dashboard user is admin
+- if `JWT_SECRET` is missing, server falls back to an insecure default; set your own secret in `.env`
+- prefer Bluesky app passwords (not your full account password)
 
-## Cronjob Example
+## Development
 
-Run every 5 minutes:
-
-```cron
-*/5 * * * * cd /path/to/tweets-2-bsky && /usr/bin/npm run cli -- run-now >> /tmp/tweets-2-bsky.log 2>&1
-```
-
-Backfill specific mapping once:
+### Start backend/scheduler from source
 
 ```bash
-npm run cli -- backfill <mapping-id-or-handle> --limit 50
+npm run dev
 ```
 
-## Web Dashboard
+### Start Vite web dev server
 
-1. Register first user (becomes admin)
-2. Configure Twitter + AI settings
-3. Add mappings
-4. Use:
-   - `Run now`
-   - backfill/reset actions per mapping
-   - config export/import
-   - "Already Posted" feed for native-themed post browsing
-
-## Configuration & Security
-
-### Environment variables
-
-Create `.env` (recommended):
-
-```env
-PORT=3000
-JWT_SECRET=your-super-secret-key-change-this
+```bash
+npm run dev:web
 ```
 
-If `JWT_SECRET` is not set, a fallback secret is used.
+### Build and quality checks
 
-### Local data files
-
-- `config.json`: mappings + auth settings + web users (do not share)
-- `data/database.sqlite`: processed tweet history
+```bash
+npm run build
+npm run typecheck
+npm run lint
+```
 
 ## Troubleshooting
 
 See: `TROUBLESHOOTING.md`
 
-Most common fix after changing Node versions:
+Common recovery after changing Node versions:
 
 ```bash
 npm run rebuild:native
