@@ -147,6 +147,130 @@ export interface ProcessedTweet {
   created_at?: string;
 }
 
+export interface ProcessedTweetSearchResult extends ProcessedTweet {
+  score: number;
+}
+
+function normalizeSearchValue(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9@#._\-\s]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function tokenizeSearchValue(value: string): string[] {
+  if (!value) {
+    return [];
+  }
+  return value.split(' ').filter((token) => token.length > 0);
+}
+
+function orderedSubsequenceScore(query: string, candidate: string): number {
+  if (!query || !candidate) {
+    return 0;
+  }
+
+  let matched = 0;
+  let searchIndex = 0;
+  for (const char of query) {
+    const foundIndex = candidate.indexOf(char, searchIndex);
+    if (foundIndex === -1) {
+      continue;
+    }
+    matched += 1;
+    searchIndex = foundIndex + 1;
+  }
+
+  return matched / query.length;
+}
+
+function buildBigrams(value: string): Set<string> {
+  const result = new Set<string>();
+  if (value.length < 2) {
+    if (value.length === 1) {
+      result.add(value);
+    }
+    return result;
+  }
+
+  for (let i = 0; i < value.length - 1; i += 1) {
+    result.add(value.slice(i, i + 2));
+  }
+
+  return result;
+}
+
+function diceCoefficient(a: string, b: string): number {
+  const aBigrams = buildBigrams(a);
+  const bBigrams = buildBigrams(b);
+  if (aBigrams.size === 0 || bBigrams.size === 0) {
+    return 0;
+  }
+
+  let overlap = 0;
+  for (const gram of aBigrams) {
+    if (bBigrams.has(gram)) {
+      overlap += 1;
+    }
+  }
+
+  return (2 * overlap) / (aBigrams.size + bBigrams.size);
+}
+
+function scoreCandidateField(query: string, tokens: string[], candidateValue?: string): number {
+  const candidate = normalizeSearchValue(candidateValue || '');
+  if (!query || !candidate) {
+    return 0;
+  }
+
+  let score = 0;
+  if (candidate === query) {
+    score += 170;
+  } else if (candidate.startsWith(query)) {
+    score += 140;
+  } else if (candidate.includes(query)) {
+    score += 112;
+  }
+
+  let matchedTokens = 0;
+  for (const token of tokens) {
+    if (candidate.includes(token)) {
+      matchedTokens += 1;
+      score += token.length >= 4 ? 18 : 12;
+    }
+  }
+
+  if (tokens.length > 0) {
+    score += (matchedTokens / tokens.length) * 48;
+  }
+
+  score += orderedSubsequenceScore(query, candidate) * 46;
+  score += diceCoefficient(query, candidate) * 55;
+
+  return score;
+}
+
+function scoreProcessedTweet(tweet: ProcessedTweet, query: string, tokens: string[]): number {
+  const usernameScore = scoreCandidateField(query, tokens, tweet.twitter_username) * 1.25;
+  const identifierScore = scoreCandidateField(query, tokens, tweet.bsky_identifier) * 1.18;
+  const textScore = scoreCandidateField(query, tokens, tweet.tweet_text) * 0.98;
+  const idScore = scoreCandidateField(query, tokens, tweet.twitter_id) * 0.72;
+
+  const maxScore = Math.max(usernameScore, identifierScore, textScore, idScore);
+  const blendedScore = maxScore + (usernameScore + identifierScore + textScore + idScore - maxScore) * 0.22;
+
+  const recencyBoost = (() => {
+    if (!tweet.created_at) return 0;
+    const timestamp = Date.parse(tweet.created_at);
+    if (!Number.isFinite(timestamp)) return 0;
+    const ageDays = (Date.now() - timestamp) / (24 * 60 * 60 * 1000);
+    return Math.max(0, 7 - ageDays);
+  })();
+
+  return blendedScore + recencyBoost;
+}
+
 export const dbService = {
   getTweet(twitterId: string, bskyIdentifier: string): ProcessedTweet | null {
     const stmt = db.prepare('SELECT * FROM processed_tweets WHERE twitter_id = ? AND bsky_identifier = ?');
@@ -226,6 +350,38 @@ export const dbService = {
   getRecentProcessedTweets(limit = 50): ProcessedTweet[] {
     const stmt = db.prepare('SELECT * FROM processed_tweets ORDER BY datetime(created_at) DESC, rowid DESC LIMIT ?');
     return stmt.all(limit) as ProcessedTweet[];
+  },
+
+  searchMigratedTweets(query: string, limit = 60, scanLimit = 3000): ProcessedTweetSearchResult[] {
+    const normalizedQuery = normalizeSearchValue(query || '');
+    if (!normalizedQuery) {
+      return [];
+    }
+
+    const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(limit, 200)) : 60;
+    const safeScanLimit = Number.isFinite(scanLimit) ? Math.max(safeLimit, Math.min(scanLimit, 8000)) : 3000;
+    const tokens = tokenizeSearchValue(normalizedQuery);
+
+    const stmt = db.prepare(
+      'SELECT * FROM processed_tweets WHERE status = "migrated" ORDER BY datetime(created_at) DESC, rowid DESC LIMIT ?',
+    );
+    const rows = stmt.all(safeScanLimit) as ProcessedTweet[];
+
+    return rows
+      .map((row) => ({
+        ...row,
+        score: scoreProcessedTweet(row, normalizedQuery, tokens),
+      }))
+      .filter((row) => row.score >= 22)
+      .sort((a, b) => {
+        if (b.score !== a.score) {
+          return b.score - a.score;
+        }
+        const aTime = a.created_at ? Date.parse(a.created_at) : 0;
+        const bTime = b.created_at ? Date.parse(b.created_at) : 0;
+        return (Number.isFinite(bTime) ? bTime : 0) - (Number.isFinite(aTime) ? aTime : 0);
+      })
+      .slice(0, safeLimit);
   },
 
   deleteTweetsByUsername(username: string) {

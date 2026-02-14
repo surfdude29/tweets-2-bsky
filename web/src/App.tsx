@@ -150,6 +150,19 @@ interface EnrichedPost {
   media: EnrichedPostMedia[];
 }
 
+interface LocalPostSearchResult {
+  twitterId: string;
+  twitterUsername: string;
+  bskyIdentifier: string;
+  tweetText?: string;
+  bskyUri?: string;
+  bskyCid?: string;
+  createdAt?: string;
+  postUrl?: string;
+  twitterUrl?: string;
+  score: number;
+}
+
 interface BskyProfileView {
   did?: string;
   handle?: string;
@@ -226,6 +239,7 @@ const TAB_PATHS: Record<DashboardTab, string> = {
 };
 const ADD_ACCOUNT_STEP_COUNT = 4;
 const ADD_ACCOUNT_STEPS = ['Owner', 'Sources', 'Bluesky', 'Confirm'] as const;
+const ACCOUNT_SEARCH_MIN_SCORE = 22;
 
 const selectClassName =
   'flex h-10 w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2';
@@ -341,6 +355,111 @@ function addTwitterUsernames(current: string[], value: string): string[] {
   }
 
   return next;
+}
+
+function normalizeSearchValue(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9@#._\-\s]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function tokenizeSearchValue(value: string): string[] {
+  if (!value) {
+    return [];
+  }
+  return value.split(' ').filter((token) => token.length > 0);
+}
+
+function orderedSubsequenceScore(query: string, candidate: string): number {
+  if (!query || !candidate) {
+    return 0;
+  }
+
+  let matched = 0;
+  let searchIndex = 0;
+  for (const char of query) {
+    const foundIndex = candidate.indexOf(char, searchIndex);
+    if (foundIndex === -1) {
+      continue;
+    }
+    matched += 1;
+    searchIndex = foundIndex + 1;
+  }
+
+  return matched / query.length;
+}
+
+function buildBigrams(value: string): Set<string> {
+  const result = new Set<string>();
+  if (value.length < 2) {
+    if (value.length === 1) {
+      result.add(value);
+    }
+    return result;
+  }
+  for (let i = 0; i < value.length - 1; i += 1) {
+    result.add(value.slice(i, i + 2));
+  }
+  return result;
+}
+
+function diceCoefficient(a: string, b: string): number {
+  const aBigrams = buildBigrams(a);
+  const bBigrams = buildBigrams(b);
+  if (aBigrams.size === 0 || bBigrams.size === 0) {
+    return 0;
+  }
+  let overlap = 0;
+  for (const gram of aBigrams) {
+    if (bBigrams.has(gram)) {
+      overlap += 1;
+    }
+  }
+  return (2 * overlap) / (aBigrams.size + bBigrams.size);
+}
+
+function scoreSearchField(query: string, tokens: string[], candidateValue?: string): number {
+  const candidate = normalizeSearchValue(candidateValue || '');
+  if (!query || !candidate) {
+    return 0;
+  }
+
+  let score = 0;
+  if (candidate === query) {
+    score += 170;
+  } else if (candidate.startsWith(query)) {
+    score += 138;
+  } else if (candidate.includes(query)) {
+    score += 108;
+  }
+
+  let matchedTokens = 0;
+  for (const token of tokens) {
+    if (candidate.includes(token)) {
+      matchedTokens += 1;
+      score += token.length >= 4 ? 18 : 12;
+    }
+  }
+  if (tokens.length > 0) {
+    score += (matchedTokens / tokens.length) * 46;
+  }
+
+  score += orderedSubsequenceScore(query, candidate) * 45;
+  score += diceCoefficient(query, candidate) * 52;
+  return score;
+}
+
+function scoreAccountMapping(mapping: AccountMapping, query: string, tokens: string[]): number {
+  const usernameScores = mapping.twitterUsernames.map((username) => scoreSearchField(query, tokens, username) * 1.24);
+  const bestUsernameScore = usernameScores.length > 0 ? Math.max(...usernameScores) : 0;
+  const identifierScore = scoreSearchField(query, tokens, mapping.bskyIdentifier) * 1.2;
+  const ownerScore = scoreSearchField(query, tokens, mapping.owner) * 0.92;
+  const groupScore = scoreSearchField(query, tokens, mapping.groupName) * 0.72;
+  const combined = [bestUsernameScore, identifierScore, ownerScore, groupScore];
+  const maxScore = Math.max(...combined);
+  return maxScore + (combined.reduce((total, value) => total + value, 0) - maxScore) * 0.24;
 }
 
 const textEncoder = new TextEncoder();
@@ -468,8 +587,15 @@ function App() {
       return {};
     }
   });
+  const [accountsViewMode, setAccountsViewMode] = useState<'grouped' | 'global'>('grouped');
+  const [accountsSearchQuery, setAccountsSearchQuery] = useState('');
   const [postsGroupFilter, setPostsGroupFilter] = useState('all');
+  const [postsSearchQuery, setPostsSearchQuery] = useState('');
+  const [localPostSearchResults, setLocalPostSearchResults] = useState<LocalPostSearchResult[]>([]);
+  const [isSearchingLocalPosts, setIsSearchingLocalPosts] = useState(false);
   const [activityGroupFilter, setActivityGroupFilter] = useState('all');
+  const [groupDraftsByKey, setGroupDraftsByKey] = useState<Record<string, { name: string; emoji: string }>>({});
+  const [isGroupActionBusy, setIsGroupActionBusy] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
 
   const [isBusy, setIsBusy] = useState(false);
@@ -477,6 +603,7 @@ function App() {
 
   const noticeTimerRef = useRef<number | null>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
+  const postsSearchRequestRef = useRef(0);
 
   const isAdmin = me?.isAdmin ?? false;
   const authHeaders = useMemo(() => (token ? { Authorization: `Bearer ${token}` } : undefined), [token]);
@@ -509,6 +636,14 @@ function App() {
     setIsAddAccountSheetOpen(false);
     setAddAccountStep(1);
     setSettingsSectionOverrides({});
+    setAccountsViewMode('grouped');
+    setAccountsSearchQuery('');
+    setPostsSearchQuery('');
+    setLocalPostSearchResults([]);
+    setIsSearchingLocalPosts(false);
+    setGroupDraftsByKey({});
+    setIsGroupActionBusy(false);
+    postsSearchRequestRef.current = 0;
     setAuthView('login');
   }, []);
 
@@ -907,6 +1042,87 @@ function App() {
         ),
       }));
   }, [groupOptions, mappings]);
+  const normalizedAccountsQuery = useMemo(() => normalizeSearchValue(accountsSearchQuery), [accountsSearchQuery]);
+  const accountSearchTokens = useMemo(() => tokenizeSearchValue(normalizedAccountsQuery), [normalizedAccountsQuery]);
+  const accountSearchScores = useMemo(() => {
+    const scores = new Map<string, number>();
+    if (!normalizedAccountsQuery) {
+      return scores;
+    }
+
+    for (const mapping of mappings) {
+      scores.set(mapping.id, scoreAccountMapping(mapping, normalizedAccountsQuery, accountSearchTokens));
+    }
+    return scores;
+  }, [accountSearchTokens, mappings, normalizedAccountsQuery]);
+  const filteredGroupedMappings = useMemo(() => {
+    const hasQuery = normalizedAccountsQuery.length > 0;
+    const sortByScore = (items: AccountMapping[]) => {
+      if (!hasQuery) {
+        return items;
+      }
+      return [...items].sort((a, b) => {
+        const scoreDelta = (accountSearchScores.get(b.id) || 0) - (accountSearchScores.get(a.id) || 0);
+        if (scoreDelta !== 0) return scoreDelta;
+        return `${(a.owner || '').toLowerCase()}-${a.bskyIdentifier.toLowerCase()}`.localeCompare(
+          `${(b.owner || '').toLowerCase()}-${b.bskyIdentifier.toLowerCase()}`,
+        );
+      });
+    };
+
+    const withSearch = groupedMappings
+      .map((group) => {
+        const mappingsForGroup = hasQuery
+          ? group.mappings.filter((mapping) => (accountSearchScores.get(mapping.id) || 0) >= ACCOUNT_SEARCH_MIN_SCORE)
+          : group.mappings;
+        return {
+          ...group,
+          mappings: sortByScore(mappingsForGroup),
+        };
+      })
+      .filter((group) => !hasQuery || group.mappings.length > 0);
+
+    if (accountsViewMode === 'grouped') {
+      return withSearch;
+    }
+
+    const allMappings = sortByScore(
+      hasQuery
+        ? mappings.filter((mapping) => (accountSearchScores.get(mapping.id) || 0) >= ACCOUNT_SEARCH_MIN_SCORE)
+        : [...mappings].sort((a, b) =>
+            `${(a.owner || '').toLowerCase()}-${a.bskyIdentifier.toLowerCase()}`.localeCompare(
+              `${(b.owner || '').toLowerCase()}-${b.bskyIdentifier.toLowerCase()}`,
+            ),
+          ),
+    );
+
+    return [
+      {
+        key: '__all__',
+        name: hasQuery ? 'Search Results' : 'All Accounts',
+        emoji: hasQuery ? '🔎' : '🌐',
+        mappings: allMappings,
+      },
+    ];
+  }, [accountSearchScores, accountsViewMode, groupedMappings, mappings, normalizedAccountsQuery]);
+  const accountMatchesCount = useMemo(
+    () => filteredGroupedMappings.reduce((total, group) => total + group.mappings.length, 0),
+    [filteredGroupedMappings],
+  );
+  const groupKeysForCollapse = useMemo(
+    () => groupedMappings.map((group) => group.key),
+    [groupedMappings],
+  );
+  const allGroupsCollapsed = useMemo(
+    () => groupKeysForCollapse.length > 0 && groupKeysForCollapse.every((groupKey) => collapsedGroupKeys[groupKey] === true),
+    [collapsedGroupKeys, groupKeysForCollapse],
+  );
+  const resolveMappingForLocalPost = useCallback(
+    (post: LocalPostSearchResult) =>
+      mappingsByBskyIdentifier.get(normalizeTwitterUsername(post.bskyIdentifier)) ||
+      mappingsByTwitterUsername.get(normalizeTwitterUsername(post.twitterUsername)),
+    [mappingsByBskyIdentifier, mappingsByTwitterUsername],
+  );
   const resolveMappingForPost = useCallback(
     (post: EnrichedPost) =>
       mappingsByBskyIdentifier.get(normalizeTwitterUsername(post.bskyIdentifier)) ||
@@ -927,6 +1143,15 @@ function App() {
         return getMappingGroupMeta(mapping).key === postsGroupFilter;
       }),
     [postedActivity, postsGroupFilter, resolveMappingForPost],
+  );
+  const filteredLocalPostSearchResults = useMemo(
+    () =>
+      localPostSearchResults.filter((post) => {
+        if (postsGroupFilter === 'all') return true;
+        const mapping = resolveMappingForLocalPost(post);
+        return getMappingGroupMeta(mapping).key === postsGroupFilter;
+      }),
+    [localPostSearchResults, postsGroupFilter, resolveMappingForLocalPost],
   );
   const filteredRecentActivity = useMemo(
     () =>
@@ -966,6 +1191,67 @@ function App() {
       setActivityGroupFilter('all');
     }
   }, [activityGroupFilter, groupOptions, postsGroupFilter]);
+
+  useEffect(() => {
+    setGroupDraftsByKey((previous) => {
+      const next: Record<string, { name: string; emoji: string }> = {};
+      for (const group of reusableGroupOptions) {
+        const existing = previous[group.key];
+        next[group.key] = {
+          name: existing?.name ?? group.name,
+          emoji: existing?.emoji ?? group.emoji,
+        };
+      }
+      return next;
+    });
+  }, [reusableGroupOptions]);
+
+  useEffect(() => {
+    if (!authHeaders) {
+      setIsSearchingLocalPosts(false);
+      setLocalPostSearchResults([]);
+      return;
+    }
+
+    const query = postsSearchQuery.trim();
+    if (!query) {
+      postsSearchRequestRef.current += 1;
+      setIsSearchingLocalPosts(false);
+      setLocalPostSearchResults([]);
+      return;
+    }
+
+    const requestId = postsSearchRequestRef.current + 1;
+    postsSearchRequestRef.current = requestId;
+    setIsSearchingLocalPosts(true);
+
+    const timer = window.setTimeout(async () => {
+      try {
+        const response = await axios.get<LocalPostSearchResult[]>('/api/posts/search', {
+          params: { q: query, limit: 120 },
+          headers: authHeaders,
+        });
+        if (postsSearchRequestRef.current !== requestId) {
+          return;
+        }
+        setLocalPostSearchResults(Array.isArray(response.data) ? response.data : []);
+      } catch (error) {
+        if (postsSearchRequestRef.current !== requestId) {
+          return;
+        }
+        setLocalPostSearchResults([]);
+        handleAuthFailure(error, 'Failed to search local post history.');
+      } finally {
+        if (postsSearchRequestRef.current === requestId) {
+          setIsSearchingLocalPosts(false);
+        }
+      }
+    }, 220);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [authHeaders, handleAuthFailure, postsSearchQuery]);
 
   const isBackfillQueued = useCallback(
     (mappingId: string) => pendingBackfills.some((entry) => entry.id === mappingId),
@@ -1193,6 +1479,17 @@ function App() {
     }));
   };
 
+  const toggleCollapseAllGroups = () => {
+    const shouldCollapse = !allGroupsCollapsed;
+    setCollapsedGroupKeys((previous) => {
+      const next = { ...previous };
+      for (const groupKey of groupKeysForCollapse) {
+        next[groupKey] = shouldCollapse;
+      }
+      return next;
+    });
+  };
+
   const handleCreateGroup = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!authHeaders) {
@@ -1262,6 +1559,80 @@ function App() {
       }
     } catch (error) {
       handleAuthFailure(error, 'Failed to move account to folder.');
+    }
+  };
+
+  const updateGroupDraft = (groupKey: string, field: 'name' | 'emoji', value: string) => {
+    setGroupDraftsByKey((previous) => ({
+      ...previous,
+      [groupKey]: {
+        name: previous[groupKey]?.name ?? '',
+        emoji: previous[groupKey]?.emoji ?? '',
+        [field]: value,
+      },
+    }));
+  };
+
+  const handleRenameGroup = async (groupKey: string) => {
+    if (!authHeaders) {
+      return;
+    }
+
+    const draft = groupDraftsByKey[groupKey];
+    if (!draft || !draft.name.trim()) {
+      showNotice('error', 'Group name is required.');
+      return;
+    }
+
+    setIsGroupActionBusy(true);
+    try {
+      await axios.put(
+        `/api/groups/${encodeURIComponent(groupKey)}`,
+        {
+          name: draft.name.trim(),
+          emoji: draft.emoji.trim(),
+        },
+        { headers: authHeaders },
+      );
+      showNotice('success', 'Group updated.');
+      await fetchData();
+    } catch (error) {
+      handleAuthFailure(error, 'Failed to update group.');
+    } finally {
+      setIsGroupActionBusy(false);
+    }
+  };
+
+  const handleDeleteGroup = async (groupKey: string) => {
+    if (!authHeaders) {
+      return;
+    }
+
+    const group = groupOptionsByKey.get(groupKey);
+    if (!group) {
+      showNotice('error', 'Group not found.');
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Delete "${group.name}"? Mappings in this folder will move to ${DEFAULT_GROUP_NAME}.`,
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setIsGroupActionBusy(true);
+    try {
+      const response = await axios.delete<{ reassignedCount?: number }>(`/api/groups/${encodeURIComponent(groupKey)}`, {
+        headers: authHeaders,
+      });
+      const reassignedCount = response.data?.reassignedCount || 0;
+      showNotice('success', `Group deleted. ${reassignedCount} account${reassignedCount === 1 ? '' : 's'} moved.`);
+      await fetchData();
+    } catch (error) {
+      handleAuthFailure(error, 'Failed to delete group.');
+    } finally {
+      setIsGroupActionBusy(false);
     }
   };
 
@@ -1791,6 +2162,7 @@ function App() {
                 })}
             </CardContent>
           </Card>
+
         </section>
       ) : null}
 
@@ -1849,9 +2221,45 @@ function App() {
                 </div>
               </form>
 
-              {groupedMappings.length === 0 ? (
+              <div className="grid gap-2 md:grid-cols-[1fr_auto]">
+                <div className="space-y-1">
+                  <Label htmlFor="accounts-search">Search accounts</Label>
+                  <Input
+                    id="accounts-search"
+                    value={accountsSearchQuery}
+                    onChange={(event) => setAccountsSearchQuery(event.target.value)}
+                    placeholder="Find by @username, owner, Bluesky handle, or folder"
+                  />
+                  {normalizedAccountsQuery ? (
+                    <p className="text-xs text-muted-foreground">
+                      {accountMatchesCount} result{accountMatchesCount === 1 ? '' : 's'} ranked by relevance
+                    </p>
+                  ) : null}
+                </div>
+                <div className="flex flex-wrap items-end justify-end gap-2">
+                  {accountsViewMode === 'grouped' ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={toggleCollapseAllGroups}
+                      disabled={groupKeysForCollapse.length === 0}
+                    >
+                      {allGroupsCollapsed ? 'Expand all' : 'Collapse all'}
+                    </Button>
+                  ) : null}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setAccountsViewMode((previous) => (previous === 'grouped' ? 'global' : 'grouped'))}
+                  >
+                    {accountsViewMode === 'grouped' ? 'View all' : 'Grouped view'}
+                  </Button>
+                </div>
+              </div>
+
+              {filteredGroupedMappings.length === 0 ? (
                 <div className="rounded-lg border border-dashed border-border/70 p-6 text-center text-sm text-muted-foreground">
-                  No mappings yet.
+                  {normalizedAccountsQuery ? 'No accounts matched this search.' : 'No mappings yet.'}
                   {isAdmin ? (
                     <div className="mt-3">
                       <Button size="sm" variant="outline" onClick={openAddAccountSheet}>
@@ -1863,8 +2271,9 @@ function App() {
                 </div>
               ) : (
                 <div className="space-y-3">
-                  {groupedMappings.map((group, groupIndex) => {
-                    const collapsed = collapsedGroupKeys[group.key] === true;
+                  {filteredGroupedMappings.map((group, groupIndex) => {
+                    const canCollapseGroup = accountsViewMode === 'grouped';
+                    const collapsed = canCollapseGroup ? collapsedGroupKeys[group.key] === true : false;
 
                     return (
                       <div
@@ -1873,8 +2282,15 @@ function App() {
                         style={{ animationDelay: `${Math.min(groupIndex * 45, 220)}ms` }}
                       >
                         <button
-                          className="group flex w-full items-center justify-between bg-muted/40 px-3 py-2 text-left transition-[background-color,padding] duration-200 hover:bg-muted/70"
-                          onClick={() => toggleGroupCollapsed(group.key)}
+                          className={cn(
+                            'group flex w-full items-center justify-between bg-muted/40 px-3 py-2 text-left transition-[background-color,padding] duration-200',
+                            canCollapseGroup ? 'hover:bg-muted/70' : '',
+                          )}
+                          onClick={() => {
+                            if (canCollapseGroup) {
+                              toggleGroupCollapsed(group.key);
+                            }
+                          }}
                           type="button"
                         >
                           <div className="flex items-center gap-2">
@@ -1883,12 +2299,14 @@ function App() {
                             <span className="font-medium">{group.name}</span>
                             <Badge variant="outline">{group.mappings.length}</Badge>
                           </div>
-                          <ChevronDown
-                            className={cn(
-                              'h-4 w-4 transition-transform duration-200 motion-reduce:transition-none',
-                              collapsed ? '-rotate-90' : 'rotate-0',
-                            )}
-                          />
+                          {canCollapseGroup ? (
+                            <ChevronDown
+                              className={cn(
+                                'h-4 w-4 transition-transform duration-200 motion-reduce:transition-none',
+                                collapsed ? '-rotate-90' : 'rotate-0',
+                              )}
+                            />
+                          ) : null}
                         </button>
 
                         <div
@@ -2052,6 +2470,75 @@ function App() {
               )}
             </CardContent>
           </Card>
+
+          <Card className="animate-slide-up">
+            <CardHeader className="pb-3">
+              <CardTitle>Group Manager</CardTitle>
+              <CardDescription>Edit folder names/emojis or delete a group.</CardDescription>
+            </CardHeader>
+            <CardContent className="pt-0">
+              {reusableGroupOptions.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-border/70 p-4 text-sm text-muted-foreground">
+                  No custom folders yet.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {reusableGroupOptions.map((group) => {
+                    const draft = groupDraftsByKey[group.key] || { name: group.name, emoji: group.emoji };
+                    return (
+                      <div
+                        key={`group-manager-${group.key}`}
+                        className="grid gap-2 rounded-lg border border-border/70 bg-muted/20 p-3 md:grid-cols-[90px_minmax(0,1fr)_auto_auto]"
+                      >
+                        <div className="space-y-1">
+                          <Label htmlFor={`group-manager-emoji-${group.key}`}>Emoji</Label>
+                          <Input
+                            id={`group-manager-emoji-${group.key}`}
+                            value={draft.emoji}
+                            onChange={(event) => updateGroupDraft(group.key, 'emoji', event.target.value)}
+                            maxLength={8}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label htmlFor={`group-manager-name-${group.key}`}>Name</Label>
+                          <Input
+                            id={`group-manager-name-${group.key}`}
+                            value={draft.name}
+                            onChange={(event) => updateGroupDraft(group.key, 'name', event.target.value)}
+                          />
+                        </div>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="self-end"
+                          disabled={isGroupActionBusy || !draft.name.trim()}
+                          onClick={() => {
+                            void handleRenameGroup(group.key);
+                          }}
+                        >
+                          Save
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="self-end text-red-600 hover:text-red-500 dark:text-red-300 dark:hover:text-red-200"
+                          disabled={isGroupActionBusy}
+                          onClick={() => {
+                            void handleDeleteGroup(group.key);
+                          }}
+                        >
+                          Delete
+                        </Button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              <p className="mt-3 text-xs text-muted-foreground">
+                Deleting a folder keeps mappings intact and moves them to {DEFAULT_GROUP_NAME}.
+              </p>
+            </CardContent>
+          </Card>
         </section>
       ) : null}
 
@@ -2062,28 +2549,120 @@ function App() {
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="space-y-1">
                   <CardTitle>Already Posted</CardTitle>
-                  <CardDescription>Native-styled feed of successfully posted Bluesky entries.</CardDescription>
+                  <CardDescription>
+                    Native-styled feed plus local SQLite search across all crossposted history.
+                  </CardDescription>
                 </div>
-                <div className="w-full max-w-xs">
-                  <Label htmlFor="posts-group-filter">Filter group</Label>
-                  <select
-                    id="posts-group-filter"
-                    className={selectClassName}
-                    value={postsGroupFilter}
-                    onChange={(event) => setPostsGroupFilter(event.target.value)}
-                  >
-                    <option value="all">All folders</option>
-                    {groupOptions.map((group) => (
-                      <option key={`posts-filter-${group.key}`} value={group.key}>
-                        {group.emoji} {group.name}
-                      </option>
-                    ))}
-                  </select>
+                <div className="grid w-full gap-2 md:max-w-2xl md:grid-cols-[1fr_240px]">
+                  <div className="space-y-1">
+                    <Label htmlFor="posts-search">Search crossposted posts</Label>
+                    <div className="relative">
+                      <Input
+                        id="posts-search"
+                        value={postsSearchQuery}
+                        onChange={(event) => setPostsSearchQuery(event.target.value)}
+                        placeholder="Search by text, @username, tweet id, or Bluesky handle"
+                      />
+                      {isSearchingLocalPosts ? (
+                        <Loader2 className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-muted-foreground" />
+                      ) : null}
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="posts-group-filter">Filter group</Label>
+                    <select
+                      id="posts-group-filter"
+                      className={selectClassName}
+                      value={postsGroupFilter}
+                      onChange={(event) => setPostsGroupFilter(event.target.value)}
+                    >
+                      <option value="all">All folders</option>
+                      {groupOptions.map((group) => (
+                        <option key={`posts-filter-${group.key}`} value={group.key}>
+                          {group.emoji} {group.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
               </div>
             </CardHeader>
             <CardContent className="pt-0">
-              {filteredPostedActivity.length === 0 ? (
+              {postsSearchQuery.trim() ? (
+                filteredLocalPostSearchResults.length === 0 ? (
+                  <div className="rounded-lg border border-dashed border-border/70 p-6 text-center text-sm text-muted-foreground">
+                    {isSearchingLocalPosts ? 'Searching local history...' : 'No local crossposted posts matched.'}
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {filteredLocalPostSearchResults.map((post) => {
+                      const mapping = resolveMappingForLocalPost(post);
+                      const groupMeta = getMappingGroupMeta(mapping);
+                      const sourceTweetUrl = post.twitterUrl || getTwitterPostUrl(post.twitterUsername, post.twitterId);
+                      const postUrl =
+                        post.postUrl ||
+                        (post.bskyUri
+                          ? `https://bsky.app/profile/${post.bskyIdentifier}/post/${post.bskyUri
+                              .split('/')
+                              .filter(Boolean)
+                              .pop() || ''}`
+                          : undefined);
+
+                      return (
+                        <article
+                          key={`${post.twitterId}-${post.bskyIdentifier}-${post.bskyCid || post.createdAt || 'result'}`}
+                          className="rounded-xl border border-border/70 bg-background/80 p-4 shadow-sm"
+                        >
+                          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-semibold">
+                                @{post.bskyIdentifier} <span className="text-muted-foreground">from @{post.twitterUsername}</span>
+                              </p>
+                              <p className="text-xs text-muted-foreground">
+                                {post.createdAt ? new Date(post.createdAt).toLocaleString() : 'Unknown time'}
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Badge variant="outline">
+                                {groupMeta.emoji} {groupMeta.name}
+                              </Badge>
+                              <Badge variant="secondary">Relevance {Math.round(post.score)}</Badge>
+                            </div>
+                          </div>
+                          <p className="mb-2 whitespace-pre-wrap break-words text-sm leading-relaxed">
+                            {post.tweetText || 'No local tweet text stored for this record.'}
+                          </p>
+                          <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+                            <span className="font-mono">Tweet ID: {post.twitterId}</span>
+                            {sourceTweetUrl ? (
+                              <a
+                                className="inline-flex items-center text-foreground underline-offset-4 hover:underline"
+                                href={sourceTweetUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                Source
+                                <ArrowUpRight className="ml-1 h-3 w-3" />
+                              </a>
+                            ) : null}
+                            {postUrl ? (
+                              <a
+                                className="inline-flex items-center text-foreground underline-offset-4 hover:underline"
+                                href={postUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                Bluesky
+                                <ArrowUpRight className="ml-1 h-3 w-3" />
+                              </a>
+                            ) : null}
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                )
+              ) : filteredPostedActivity.length === 0 ? (
                 <div className="rounded-lg border border-dashed border-border/70 p-6 text-center text-sm text-muted-foreground">
                   No posted entries yet.
                 </div>

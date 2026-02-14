@@ -23,6 +23,7 @@ const staticAssetsDir = fs.existsSync(path.join(WEB_DIST_DIR, 'index.html')) ? W
 const BSKY_APPVIEW_URL = process.env.BSKY_APPVIEW_URL || 'https://public.api.bsky.app';
 const POST_VIEW_CACHE_TTL_MS = 60_000;
 const PROFILE_CACHE_TTL_MS = 5 * 60_000;
+const RESERVED_UNGROUPED_KEY = 'ungrouped';
 
 interface CacheEntry<T> {
   value: T;
@@ -74,6 +75,19 @@ interface EnrichedPost {
   media: EnrichedPostMedia[];
 }
 
+interface LocalPostSearchResult {
+  twitterId: string;
+  twitterUsername: string;
+  bskyIdentifier: string;
+  tweetText?: string;
+  bskyUri?: string;
+  bskyCid?: string;
+  createdAt?: string;
+  postUrl?: string;
+  twitterUrl?: string;
+  score: number;
+}
+
 const postViewCache = new Map<string, CacheEntry<any>>();
 const profileCache = new Map<string, CacheEntry<BskyProfileView>>();
 
@@ -114,15 +128,19 @@ function normalizeGroupEmoji(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+function getNormalizedGroupKey(value: unknown): string {
+  return normalizeGroupName(value).toLowerCase();
+}
+
 function ensureGroupExists(config: AppConfig, name?: string, emoji?: string) {
   const normalizedName = normalizeGroupName(name);
-  if (!normalizedName) return;
+  if (!normalizedName || getNormalizedGroupKey(normalizedName) === RESERVED_UNGROUPED_KEY) return;
 
   if (!Array.isArray(config.groups)) {
     config.groups = [];
   }
 
-  const existingIndex = config.groups.findIndex((group) => normalizeGroupName(group.name).toLowerCase() === normalizedName.toLowerCase());
+  const existingIndex = config.groups.findIndex((group) => getNormalizedGroupKey(group.name) === getNormalizedGroupKey(normalizedName));
   const normalizedEmoji = normalizeGroupEmoji(emoji);
 
   if (existingIndex === -1) {
@@ -444,7 +462,10 @@ app.get('/api/mappings', authenticateToken, (_req, res) => {
 
 app.get('/api/groups', authenticateToken, (_req, res) => {
   const config = getConfig();
-  res.json(Array.isArray(config.groups) ? config.groups : []);
+  const groups = Array.isArray(config.groups)
+    ? config.groups.filter((group) => getNormalizedGroupKey(group.name) !== RESERVED_UNGROUPED_KEY)
+    : [];
+  res.json(groups);
 });
 
 app.post('/api/groups', authenticateToken, (req, res) => {
@@ -457,11 +478,125 @@ app.post('/api/groups', authenticateToken, (req, res) => {
     return;
   }
 
+  if (getNormalizedGroupKey(normalizedName) === RESERVED_UNGROUPED_KEY) {
+    res.status(400).json({ error: '"Ungrouped" is reserved for default behavior.' });
+    return;
+  }
+
   ensureGroupExists(config, normalizedName, normalizedEmoji);
   saveConfig(config);
 
-  const group = config.groups.find((entry) => normalizeGroupName(entry.name).toLowerCase() === normalizedName.toLowerCase());
+  const group = config.groups.find((entry) => getNormalizedGroupKey(entry.name) === getNormalizedGroupKey(normalizedName));
   res.json(group || { name: normalizedName, ...(normalizedEmoji ? { emoji: normalizedEmoji } : {}) });
+});
+
+app.put('/api/groups/:groupKey', authenticateToken, (req, res) => {
+  const currentGroupKey = getNormalizedGroupKey(req.params.groupKey);
+  if (!currentGroupKey || currentGroupKey === RESERVED_UNGROUPED_KEY) {
+    res.status(400).json({ error: 'Invalid group key.' });
+    return;
+  }
+
+  const requestedName = normalizeGroupName(req.body?.name);
+  const requestedEmoji = normalizeGroupEmoji(req.body?.emoji);
+  if (!requestedName) {
+    res.status(400).json({ error: 'Group name is required.' });
+    return;
+  }
+
+  const requestedGroupKey = getNormalizedGroupKey(requestedName);
+  if (requestedGroupKey === RESERVED_UNGROUPED_KEY) {
+    res.status(400).json({ error: '"Ungrouped" is reserved and cannot be edited.' });
+    return;
+  }
+
+  const config = getConfig();
+  if (!Array.isArray(config.groups)) {
+    config.groups = [];
+  }
+
+  const groupIndex = config.groups.findIndex((group) => getNormalizedGroupKey(group.name) === currentGroupKey);
+  if (groupIndex === -1) {
+    res.status(404).json({ error: 'Group not found.' });
+    return;
+  }
+
+  const mergeIndex = config.groups.findIndex(
+    (group, index) => index !== groupIndex && getNormalizedGroupKey(group.name) === requestedGroupKey,
+  );
+
+  let finalName = requestedName;
+  let finalEmoji = requestedEmoji || normalizeGroupEmoji(config.groups[groupIndex]?.emoji);
+  if (mergeIndex !== -1) {
+    finalName = normalizeGroupName(config.groups[mergeIndex]?.name) || requestedName;
+    finalEmoji = requestedEmoji || normalizeGroupEmoji(config.groups[mergeIndex]?.emoji) || finalEmoji;
+
+    config.groups[mergeIndex] = {
+      name: finalName,
+      ...(finalEmoji ? { emoji: finalEmoji } : {}),
+    };
+    config.groups.splice(groupIndex, 1);
+  } else {
+    config.groups[groupIndex] = {
+      name: finalName,
+      ...(finalEmoji ? { emoji: finalEmoji } : {}),
+    };
+  }
+
+  const keysToRewrite = new Set([currentGroupKey, requestedGroupKey]);
+  config.mappings = config.mappings.map((mapping) => {
+    const mappingGroupKey = getNormalizedGroupKey(mapping.groupName);
+    if (!keysToRewrite.has(mappingGroupKey)) {
+      return mapping;
+    }
+    return {
+      ...mapping,
+      groupName: finalName,
+      groupEmoji: finalEmoji || undefined,
+    };
+  });
+
+  saveConfig(config);
+  res.json({
+    name: finalName,
+    ...(finalEmoji ? { emoji: finalEmoji } : {}),
+  });
+});
+
+app.delete('/api/groups/:groupKey', authenticateToken, (req, res) => {
+  const groupKey = getNormalizedGroupKey(req.params.groupKey);
+  if (!groupKey || groupKey === RESERVED_UNGROUPED_KEY) {
+    res.status(400).json({ error: 'Invalid group key.' });
+    return;
+  }
+
+  const config = getConfig();
+  if (!Array.isArray(config.groups)) {
+    config.groups = [];
+  }
+
+  const beforeCount = config.groups.length;
+  config.groups = config.groups.filter((group) => getNormalizedGroupKey(group.name) !== groupKey);
+  if (config.groups.length === beforeCount) {
+    res.status(404).json({ error: 'Group not found.' });
+    return;
+  }
+
+  let reassigned = 0;
+  config.mappings = config.mappings.map((mapping) => {
+    if (getNormalizedGroupKey(mapping.groupName) !== groupKey) {
+      return mapping;
+    }
+    reassigned += 1;
+    return {
+      ...mapping,
+      groupName: undefined,
+      groupEmoji: undefined,
+    };
+  });
+
+  saveConfig(config);
+  res.json({ success: true, reassignedCount: reassigned });
 });
 
 app.post('/api/mappings', authenticateToken, (req, res) => {
@@ -790,6 +925,32 @@ app.post('/api/bsky/profiles', authenticateToken, async (req, res) => {
   const limitedActors = actors.slice(0, 200);
   const profiles = await fetchProfilesByActor(limitedActors);
   res.json(profiles);
+});
+
+app.get('/api/posts/search', authenticateToken, (req, res) => {
+  const query = typeof req.query.q === 'string' ? req.query.q : '';
+  if (!query.trim()) {
+    res.json([]);
+    return;
+  }
+
+  const requestedLimit = req.query.limit ? Number(req.query.limit) : 80;
+  const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 200)) : 80;
+
+  const results = dbService.searchMigratedTweets(query, limit).map<LocalPostSearchResult>((row) => ({
+    twitterId: row.twitter_id,
+    twitterUsername: row.twitter_username,
+    bskyIdentifier: row.bsky_identifier,
+    tweetText: row.tweet_text,
+    bskyUri: row.bsky_uri,
+    bskyCid: row.bsky_cid,
+    createdAt: row.created_at,
+    postUrl: buildPostUrl(row.bsky_identifier, row.bsky_uri),
+    twitterUrl: buildTwitterPostUrl(row.twitter_username, row.twitter_id),
+    score: Number(row.score.toFixed(2)),
+  }));
+
+  res.json(results);
 });
 
 app.get('/api/posts/enriched', authenticateToken, async (req, res) => {
