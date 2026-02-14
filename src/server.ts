@@ -476,6 +476,7 @@ export interface PendingBackfill {
 }
 let pendingBackfills: PendingBackfill[] = [];
 let backfillSequence = 0;
+let schedulerWakeSignal = 0; // Monotonic counter to wake scheduler loop immediately.
 
 interface AppStatus {
   state: 'idle' | 'checking' | 'backfilling' | 'pacing' | 'processing';
@@ -496,6 +497,16 @@ let currentAppStatus: AppStatus = {
 let updateJobState: UpdateJobState = {
   running: false,
 };
+
+function signalSchedulerWake(): void {
+  schedulerWakeSignal += 1;
+}
+
+function requestImmediateSchedulerPass(): void {
+  lastCheckTime = 0;
+  nextCheckTime = Date.now() + 250;
+  signalSchedulerWake();
+}
 
 app.use(cors());
 app.use(express.json());
@@ -1880,8 +1891,7 @@ app.post('/api/run-now', authenticateToken, (req: any, res) => {
     return;
   }
 
-  lastCheckTime = 0;
-  nextCheckTime = Date.now() + 1000;
+  requestImmediateSchedulerPass();
   res.json({ success: true, message: 'Check triggered' });
 });
 
@@ -1893,6 +1903,7 @@ app.post('/api/backfill/clear-all', authenticateToken, requireAdmin, (_req, res)
     backfillMappingId: undefined,
     backfillRequestId: undefined,
   });
+  signalSchedulerWake();
   res.json({ success: true, message: 'All backfills cleared' });
 });
 
@@ -1931,6 +1942,7 @@ app.post('/api/backfill/:id', authenticateToken, (req: any, res) => {
     requestId,
   });
   pendingBackfills.sort((a, b) => a.sequence - b.sequence);
+  signalSchedulerWake();
 
   res.json({
     success: true,
@@ -1955,6 +1967,7 @@ app.delete('/api/backfill/:id', authenticateToken, (req: any, res) => {
   }
 
   pendingBackfills = pendingBackfills.filter((entry) => entry.id !== id);
+  signalSchedulerWake();
   res.json({ success: true });
 });
 
@@ -2122,6 +2135,14 @@ export function getPendingBackfills(): PendingBackfill[] {
 
 export function getNextCheckTime(): number {
   return nextCheckTime;
+}
+
+export function getSchedulerWakeSignal(): number {
+  return schedulerWakeSignal;
+}
+
+export function triggerImmediateRun(): void {
+  requestImmediateSchedulerPass();
 }
 
 export function clearBackfill(id: string, requestId?: string) {

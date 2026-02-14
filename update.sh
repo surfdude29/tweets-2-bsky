@@ -24,6 +24,7 @@ BRANCH_OVERRIDE=""
 STASH_REF=""
 STASH_CREATED=0
 STASH_RESTORED=0
+UNTRACKED_COUNT=0
 
 BACKUP_SOURCES=()
 BACKUP_PATHS=()
@@ -89,7 +90,7 @@ backup_file() {
   local base
   base="$(basename "$file")"
   local backup_path
-  backup_path="$(mktemp "${TMPDIR:-/tmp}/tweets2bsky-${base}.XXXXXX")"
+  backup_path="$(mktemp_file "tweets2bsky-${base}")"
   cp "$file" "$backup_path"
   BACKUP_SOURCES+=("$file")
   BACKUP_PATHS+=("$backup_path")
@@ -110,6 +111,19 @@ restore_backups() {
 cleanup() {
   restore_backups
   release_lock
+}
+
+mktemp_file() {
+  local prefix="$1"
+
+  if mktemp --version >/dev/null 2>&1; then
+    mktemp "${TMPDIR:-/tmp}/${prefix}.XXXXXX"
+    return 0
+  fi
+
+  local tmp_root
+  tmp_root="${TMPDIR:-/tmp}"
+  mktemp -t "${prefix}.XXXXXX" 2>/dev/null || mktemp "${tmp_root}/${prefix}.XXXXXX"
 }
 
 ensure_git_repo() {
@@ -185,12 +199,12 @@ resolve_branch() {
   exit 1
 }
 
-working_tree_dirty() {
-  [[ -n "$(git status --porcelain --untracked-files=normal)" ]]
+tracked_tree_dirty() {
+  [[ -n "$(git status --porcelain --untracked-files=no)" ]]
 }
 
 stash_local_changes() {
-  if ! working_tree_dirty; then
+  if ! tracked_tree_dirty; then
     return 0
   fi
 
@@ -199,13 +213,24 @@ stash_local_changes() {
   local before after message
   before="$(git stash list -n 1 --format=%gd || true)"
   message="tweets-2-bsky-update-autostash-$(date -u +%Y%m%d-%H%M%S)"
-  git stash push -u -m "$message" >/dev/null
+  git stash push -m "$message" >/dev/null
   after="$(git stash list -n 1 --format=%gd || true)"
 
   if [[ -n "$after" && "$after" != "$before" ]]; then
     STASH_REF="$after"
     STASH_CREATED=1
     echo "✅ Saved local changes to $STASH_REF"
+  fi
+}
+
+print_untracked_notice() {
+  local count
+  count="$(git ls-files --others --exclude-standard | wc -l | tr -d '[:space:]')"
+  UNTRACKED_COUNT="$count"
+
+  if [[ "$count" -gt 0 ]]; then
+    echo "ℹ️  Leaving $count untracked file(s) untouched (not stashed)."
+    echo "   This avoids slow/hanging updates on large data directories."
   fi
 }
 
@@ -344,26 +369,50 @@ restart_runtime() {
 
   echo "🔄 Restarting runtime..."
 
-  if pm2_has_process "$APP_NAME"; then
-    pm2 restart "$APP_NAME" --update-env >/dev/null 2>&1 || {
-      echo "⚠️  PM2 restart failed for $APP_NAME. Recreating process..."
-      pm2 delete "$APP_NAME" >/dev/null 2>&1 || true
-      pm2 start dist/index.js --name "$APP_NAME" --cwd "$SCRIPT_DIR" --update-env >/dev/null 2>&1
-    }
-    pm2 save >/dev/null 2>&1 || true
-    echo "✅ Restarted PM2 process: $APP_NAME"
-    return 0
-  fi
+  if command -v pm2 >/dev/null 2>&1; then
+    local has_app=0
+    local has_legacy=0
 
-  if pm2_has_process "$LEGACY_APP_NAME"; then
-    pm2 restart "$LEGACY_APP_NAME" --update-env >/dev/null 2>&1 || {
-      echo "⚠️  PM2 restart failed for $LEGACY_APP_NAME. Recreating under $APP_NAME..."
+    if pm2_has_process "$APP_NAME"; then
+      has_app=1
+    fi
+    if pm2_has_process "$LEGACY_APP_NAME"; then
+      has_legacy=1
+    fi
+
+    if [[ "$has_app" -eq 1 && "$has_legacy" -eq 1 ]]; then
+      echo "ℹ️  Found both PM2 processes ($APP_NAME and $LEGACY_APP_NAME). Consolidating to $APP_NAME..."
+      pm2 restart "$APP_NAME" --update-env >/dev/null 2>&1 || {
+        pm2 delete "$APP_NAME" >/dev/null 2>&1 || true
+        pm2 start dist/index.js --name "$APP_NAME" --cwd "$SCRIPT_DIR" --update-env >/dev/null 2>&1
+      }
       pm2 delete "$LEGACY_APP_NAME" >/dev/null 2>&1 || true
-      pm2 start dist/index.js --name "$APP_NAME" --cwd "$SCRIPT_DIR" --update-env >/dev/null 2>&1
-    }
-    pm2 save >/dev/null 2>&1 || true
-    echo "✅ Restarted PM2 process."
-    return 0
+      pm2 save >/dev/null 2>&1 || true
+      echo "✅ Restarted PM2 process: $APP_NAME"
+      return 0
+    fi
+
+    if [[ "$has_app" -eq 1 ]]; then
+      pm2 restart "$APP_NAME" --update-env >/dev/null 2>&1 || {
+        echo "⚠️  PM2 restart failed for $APP_NAME. Recreating process..."
+        pm2 delete "$APP_NAME" >/dev/null 2>&1 || true
+        pm2 start dist/index.js --name "$APP_NAME" --cwd "$SCRIPT_DIR" --update-env >/dev/null 2>&1
+      }
+      pm2 save >/dev/null 2>&1 || true
+      echo "✅ Restarted PM2 process: $APP_NAME"
+      return 0
+    fi
+
+    if [[ "$has_legacy" -eq 1 ]]; then
+      pm2 restart "$LEGACY_APP_NAME" --update-env >/dev/null 2>&1 || {
+        echo "⚠️  PM2 restart failed for $LEGACY_APP_NAME. Recreating it..."
+        pm2 delete "$LEGACY_APP_NAME" >/dev/null 2>&1 || true
+        pm2 start dist/index.js --name "$LEGACY_APP_NAME" --cwd "$SCRIPT_DIR" --update-env >/dev/null 2>&1
+      }
+      pm2 save >/dev/null 2>&1 || true
+      echo "✅ Restarted PM2 process: $LEGACY_APP_NAME"
+      return 0
+    fi
   fi
 
   if nohup_process_running; then
@@ -457,6 +506,7 @@ backup_file "$CONFIG_FILE"
 backup_file "$ENV_FILE"
 
 stash_local_changes
+print_untracked_notice
 
 remote="$(resolve_remote)"
 branch="$(resolve_branch "$remote")"

@@ -2153,6 +2153,7 @@ import {
   clearBackfill,
   getNextCheckTime,
   getPendingBackfills,
+  getSchedulerWakeSignal,
   startServer,
   updateAppStatus,
   updateLastCheckTime,
@@ -2285,6 +2286,23 @@ async function main(): Promise<void> {
   // Concurrency limit for processing accounts
   const runLimit = pLimit(3);
   let deferredScheduledRun = false;
+  let lastWakeSignal = getSchedulerWakeSignal();
+
+  const sleepWithWake = async (durationMs: number) => {
+    const intervalMs = 250;
+    const end = Date.now() + durationMs;
+
+    while (Date.now() < end) {
+      const wakeSignal = getSchedulerWakeSignal();
+      if (wakeSignal > lastWakeSignal) {
+        lastWakeSignal = wakeSignal;
+        return;
+      }
+
+      const remainingMs = Math.max(0, end - Date.now());
+      await new Promise((resolve) => setTimeout(resolve, Math.min(intervalMs, remainingMs)));
+    }
+  };
 
   // Main loop
   while (true) {
@@ -2294,7 +2312,16 @@ async function main(): Promise<void> {
 
     const isScheduledRunDue = now >= nextTime;
     const pendingBackfills = getPendingBackfills();
-    const shouldRunScheduledCycle = isScheduledRunDue || (deferredScheduledRun && pendingBackfills.length === 0);
+    const wakeSignal = getSchedulerWakeSignal();
+    const wakeRequested = wakeSignal > lastWakeSignal;
+    if (wakeRequested) {
+      lastWakeSignal = wakeSignal;
+    }
+
+    const shouldRunScheduledCycle =
+      isScheduledRunDue ||
+      (deferredScheduledRun && pendingBackfills.length === 0) ||
+      (wakeRequested && pendingBackfills.length === 0);
 
     if (isScheduledRunDue && pendingBackfills.length > 0) {
       deferredScheduledRun = true;
@@ -2337,7 +2364,7 @@ async function main(): Promise<void> {
         });
       }
 
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+      await sleepWithWake(2000);
     } else if (shouldRunScheduledCycle) {
       console.log(
         deferredScheduledRun && !isScheduledRunDue
@@ -2369,8 +2396,8 @@ async function main(): Promise<void> {
       updateAppStatus({ state: 'idle', message: 'Scheduled checks complete' });
     }
 
-    // Sleep for 5 seconds
-    await new Promise((resolve) => setTimeout(resolve, 5000));
+    // Sleep briefly between loop iterations, but wake early when UI actions request work.
+    await sleepWithWake(5000);
   }
 }
 
