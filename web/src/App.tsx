@@ -754,6 +754,8 @@ function App() {
   const noticeTimerRef = useRef<number | null>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
   const postsSearchRequestRef = useRef(0);
+  const statusRequestRef = useRef(0);
+  const statusMutationRef = useRef(0);
 
   const isAdmin = me?.isAdmin ?? false;
   const effectivePermissions = useMemo<UserPermissions>(() => normalizePermissions(me?.permissions), [me?.permissions]);
@@ -840,8 +842,17 @@ function App() {
       return;
     }
 
+    const requestToken = ++statusRequestRef.current;
+    const mutationTokenAtStart = statusMutationRef.current;
+
     try {
       const response = await axios.get<StatusResponse>('/api/status', { headers: authHeaders });
+      if (requestToken !== statusRequestRef.current) {
+        return;
+      }
+      if (mutationTokenAtStart !== statusMutationRef.current) {
+        return;
+      }
       setStatus(response.data);
     } catch (error) {
       handleAuthFailure(error, 'Failed to fetch status.');
@@ -1635,6 +1646,23 @@ function App() {
     }
 
     try {
+      statusMutationRef.current += 1;
+      setStatus((previous) =>
+        previous
+          ? {
+              ...previous,
+              nextCheckTime: Date.now() + 1000,
+              currentStatus: {
+                ...previous.currentStatus,
+                state: 'checking',
+                message: 'Manual run requested...',
+                lastUpdate: Date.now(),
+                backfillMappingId: undefined,
+                backfillRequestId: undefined,
+              },
+            }
+          : previous,
+      );
       await axios.post('/api/run-now', {}, { headers: authHeaders });
       showNotice('info', 'Check triggered.');
       await fetchStatus();
@@ -1654,11 +1682,62 @@ function App() {
     }
 
     try {
+      statusMutationRef.current += 1;
+      setStatus((previous) =>
+        previous
+          ? {
+              ...previous,
+              pendingBackfills: [],
+              currentStatus: {
+                ...previous.currentStatus,
+                state: 'idle',
+                message: 'Backfill queue cleared',
+                backfillMappingId: undefined,
+                backfillRequestId: undefined,
+                lastUpdate: Date.now(),
+              },
+            }
+          : previous,
+      );
       await axios.post('/api/backfill/clear-all', {}, { headers: authHeaders });
       showNotice('success', 'Backfill queue cleared.');
       await fetchStatus();
     } catch (error) {
       handleAuthFailure(error, 'Failed to clear backfill queue.');
+    }
+  };
+
+  const cancelQueuedBackfill = async (mappingId: string) => {
+    if (!authHeaders) {
+      return;
+    }
+
+    const mapping = mappings.find((entry) => entry.id === mappingId);
+    if (!mapping || !canManageMapping(mapping)) {
+      showNotice('error', 'You do not have permission to cancel this queue entry.');
+      return;
+    }
+
+    try {
+      statusMutationRef.current += 1;
+      setStatus((previous) => {
+        if (!previous) {
+          return previous;
+        }
+
+        const nextPending = previous.pendingBackfills
+          .filter((entry) => entry.id !== mappingId)
+          .map((entry, index) => ({ ...entry, position: index + 1 }));
+        return {
+          ...previous,
+          pendingBackfills: nextPending,
+        };
+      });
+      await axios.delete(`/api/backfill/${mappingId}`, { headers: authHeaders });
+      showNotice('success', 'Queue entry cancelled.');
+      await fetchStatus();
+    } catch (error) {
+      handleAuthFailure(error, 'Failed to cancel queue entry.');
     }
   };
 
@@ -1692,6 +1771,31 @@ function App() {
         await axios.delete(`/api/mappings/${mappingId}/cache`, { headers: authHeaders });
       }
 
+      statusMutationRef.current += 1;
+      setStatus((previous) => {
+        if (!previous) {
+          return previous;
+        }
+
+        const now = Date.now();
+        const existing = previous.pendingBackfills.filter((entry) => entry.id !== mappingId);
+        const nextPending = [
+          ...existing,
+          {
+            id: mappingId,
+            limit: safeLimit,
+            queuedAt: now,
+            sequence: now,
+            requestId: `ui-${now}`,
+            position: existing.length + 1,
+          },
+        ].map((entry, index) => ({ ...entry, position: index + 1 }));
+
+        return {
+          ...previous,
+          pendingBackfills: nextPending,
+        };
+      });
       await axios.post(`/api/backfill/${mappingId}`, { limit: safeLimit }, { headers: authHeaders });
       showNotice(
         'success',
@@ -3094,8 +3198,19 @@ function App() {
                                                           void requestBackfill(mapping.id, 'normal');
                                                         }}
                                                       >
-                                                        Backfill
+                                                        Add to queue
                                                       </Button>
+                                                      {queued && !active ? (
+                                                        <Button
+                                                          variant="ghost"
+                                                          size="sm"
+                                                          onClick={() => {
+                                                            void cancelQueuedBackfill(mapping.id);
+                                                          }}
+                                                        >
+                                                          Cancel queue
+                                                        </Button>
+                                                      ) : null}
                                                       {isAdmin ? (
                                                         <Button
                                                           variant="subtle"
