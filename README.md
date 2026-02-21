@@ -35,7 +35,7 @@ If port `3000` is already in use, change only the first port (example: `-p 3001:
 
 1. Register the first user (this user becomes admin).
 2. Add Twitter cookies in Settings.
-3. Add at least one mapping.
+3. Add at least one mapping via the guided "Add account" flow (Twitter sources -> Bluesky account -> credential validation -> verify email + create).
 4. Click `Run now`.
 
 ### 3) Useful Docker commands
@@ -391,6 +391,13 @@ npm run cli -- add-mapping
 npm run cli -- run-now
 ```
 
+`add-mapping` now runs a guided onboarding flow:
+
+1. enter one or more Twitter source usernames
+2. create Bluesky account (or use existing)
+3. enter Bluesky identifier + app password (+ optional custom PDS URL)
+4. verify email, then create mapping and auto-sync profile metadata from Twitter
+
 ## Recommended Command Examples
 
 Always invoke CLI commands as:
@@ -419,6 +426,7 @@ npm run cli -- set-interval 5
 
 ```bash
 npm run cli -- add-mapping
+npm run cli -- sync-profile <mapping-id-or-handle> --source <twitter-username>
 npm run cli -- edit-mapping <mapping-id-or-handle>
 npm run cli -- remove <mapping-id-or-handle>
 ```

@@ -12,6 +12,7 @@
     "rebuild:native": "bash scripts/rebuild-native.sh",
     "postinstall": "bash scripts/rebuild-native.sh",
     "run:once": "node dist/index.js --run-once --no-web",
+    "test:twitter-metadata": "tsx scripts/test-twitter-profile-metadata.ts",
     "start": "node dist/index.js",
     "cli": "tsx src/cli.ts",
     "dev": "tsx src/index.ts",

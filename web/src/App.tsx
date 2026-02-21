@@ -238,6 +238,35 @@ interface ManagedUser {
   mappings: AccountMapping[];
 }
 
+interface TwitterMirrorProfile {
+  username: string;
+  profileUrl: string;
+  name?: string;
+  biography?: string;
+  avatarUrl?: string;
+  bannerUrl?: string;
+  mirroredDisplayName: string;
+  mirroredDescription: string;
+}
+
+interface BlueskyCredentialValidation {
+  did: string;
+  handle: string;
+  email?: string;
+  emailConfirmed: boolean;
+  serviceUrl: string;
+  settingsUrl: string;
+}
+
+interface MirrorProfileSyncResult {
+  success: boolean;
+  twitterProfile: TwitterMirrorProfile;
+  bsky: BlueskyCredentialValidation;
+  avatarSynced: boolean;
+  bannerSynced: boolean;
+  warnings: string[];
+}
+
 interface BootstrapStatus {
   bootstrapOpen: boolean;
 }
@@ -322,8 +351,8 @@ const TAB_PATHS: Record<DashboardTab, string> = {
   activity: '/activity',
   settings: '/settings',
 };
-const ADD_ACCOUNT_STEP_COUNT = 4;
-const ADD_ACCOUNT_STEPS = ['Owner', 'Sources', 'Bluesky', 'Confirm'] as const;
+const ADD_ACCOUNT_STEPS = ['Sources', 'Create', 'Bluesky', 'Verify & Create'] as const;
+const ADD_ACCOUNT_STEP_COUNT = ADD_ACCOUNT_STEPS.length;
 const ACCOUNT_SEARCH_MIN_SCORE = 22;
 const DEFAULT_BACKFILL_LIMIT = 15;
 const DEFAULT_USER_PERMISSIONS: UserPermissions = {
@@ -701,6 +730,12 @@ function App() {
   const [newMapping, setNewMapping] = useState<MappingFormState>(defaultMappingForm);
   const [newTwitterUsers, setNewTwitterUsers] = useState<string[]>([]);
   const [newTwitterInput, setNewTwitterInput] = useState('');
+  const [newTwitterMirrorProfiles, setNewTwitterMirrorProfiles] = useState<Record<string, TwitterMirrorProfile>>({});
+  const [selectedMirrorSourceUsername, setSelectedMirrorSourceUsername] = useState('');
+  const [validatedBskyCredentials, setValidatedBskyCredentials] = useState<BlueskyCredentialValidation | null>(null);
+  const [isMirrorPreviewLoading, setIsMirrorPreviewLoading] = useState(false);
+  const [isCredentialValidationBusy, setIsCredentialValidationBusy] = useState(false);
+  const [syncingProfileMappingId, setSyncingProfileMappingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<MappingFormState>(defaultMappingForm);
   const [editTwitterUsers, setEditTwitterUsers] = useState<string[]>([]);
   const [editTwitterInput, setEditTwitterInput] = useState('');
@@ -834,6 +869,12 @@ function App() {
     setRecentActivity([]);
     setEditingMapping(null);
     setNewTwitterUsers([]);
+    setNewTwitterMirrorProfiles({});
+    setSelectedMirrorSourceUsername('');
+    setValidatedBskyCredentials(null);
+    setIsMirrorPreviewLoading(false);
+    setIsCredentialValidationBusy(false);
+    setSyncingProfileMappingId(null);
     setEditTwitterUsers([]);
     setNewGroupName('');
     setNewGroupEmoji(DEFAULT_GROUP_EMOJI);
@@ -1230,9 +1271,29 @@ function App() {
     };
   }, [isAddAccountSheetOpen]);
 
+  useEffect(() => {
+    if (newTwitterUsers.length === 0) {
+      setSelectedMirrorSourceUsername('');
+      return;
+    }
+
+    const normalizedSelected = normalizeTwitterUsername(selectedMirrorSourceUsername);
+    const hasSelected = newTwitterUsers.some((username) => normalizeTwitterUsername(username) === normalizedSelected);
+    if (!hasSelected) {
+      setSelectedMirrorSourceUsername(newTwitterUsers[0] || '');
+    }
+  }, [newTwitterUsers, selectedMirrorSourceUsername]);
+
+  useEffect(() => {
+    setValidatedBskyCredentials(null);
+  }, [newMapping.bskyIdentifier, newMapping.bskyPassword, newMapping.bskyServiceUrl]);
+
   const pendingBackfills = status?.pendingBackfills ?? [];
   const currentStatus = status?.currentStatus;
   const latestActivity = recentActivity[0];
+  const selectedMirrorPreview = selectedMirrorSourceUsername
+    ? newTwitterMirrorProfiles[normalizeTwitterUsername(selectedMirrorSourceUsername)]
+    : undefined;
   const dashboardTabs = useMemo(
     () => [
       { id: 'overview' as DashboardTab, label: 'Overview', icon: LayoutDashboard },
@@ -1906,6 +1967,86 @@ function App() {
     }
   };
 
+  const resolveProfileSyncSource = (mapping: AccountMapping): string | null => {
+    const candidates = [
+      ...new Set(mapping.twitterUsernames.map(normalizeTwitterUsername).filter((value) => value.length > 0)),
+    ];
+    if (candidates.length === 0) {
+      showNotice('error', 'Mapping has no Twitter source usernames.');
+      return null;
+    }
+
+    if (candidates.length === 1) {
+      return candidates[0] || null;
+    }
+
+    const typed = window.prompt(
+      `This mapping has multiple Twitter sources. Enter one to mirror from:\n${candidates
+        .map((username) => `@${username}`)
+        .join(', ')}`,
+      candidates[0],
+    );
+
+    if (typed === null) {
+      return null;
+    }
+
+    const selected = normalizeTwitterUsername(typed);
+    if (!selected || !candidates.includes(selected)) {
+      showNotice('error', 'Please enter one of the mapped Twitter usernames.');
+      return null;
+    }
+
+    return selected;
+  };
+
+  const handleSyncProfileFromTwitter = async (mapping: AccountMapping) => {
+    if (!authHeaders) {
+      return;
+    }
+    if (!canManageMapping(mapping)) {
+      showNotice('error', 'You do not have permission to update this mapping.');
+      return;
+    }
+
+    const sourceTwitterUsername = resolveProfileSyncSource(mapping);
+    if (!sourceTwitterUsername) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Sync profile from @${sourceTwitterUsername}? This replaces display name, bio, avatar, and banner and keeps the {UNOFFICIAL} suffix.`,
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setSyncingProfileMappingId(mapping.id);
+    try {
+      const response = await axios.post<MirrorProfileSyncResult>(
+        `/api/mappings/${mapping.id}/sync-profile-from-twitter`,
+        { sourceTwitterUsername },
+        { headers: authHeaders },
+      );
+
+      const warnings = response.data?.warnings || [];
+      if (warnings.length > 0) {
+        showNotice(
+          'info',
+          `Profile synced from @${sourceTwitterUsername} with ${warnings.length} warning(s). First warning: ${warnings[0]}`,
+        );
+      } else {
+        showNotice('success', `Profile synced from @${sourceTwitterUsername}.`);
+      }
+
+      await fetchData();
+    } catch (error) {
+      handleAuthFailure(error, 'Failed to sync profile from Twitter.');
+    } finally {
+      setSyncingProfileMappingId((previous) => (previous === mapping.id ? null : previous));
+    }
+  };
+
   const addNewTwitterUsername = () => {
     setNewTwitterUsers((previous) => addTwitterUsernames(previous, newTwitterInput));
     setNewTwitterInput('');
@@ -2115,6 +2256,11 @@ function App() {
     });
     setNewTwitterUsers([]);
     setNewTwitterInput('');
+    setNewTwitterMirrorProfiles({});
+    setSelectedMirrorSourceUsername('');
+    setValidatedBskyCredentials(null);
+    setIsMirrorPreviewLoading(false);
+    setIsCredentialValidationBusy(false);
     setAddAccountStep(1);
   };
 
@@ -2144,6 +2290,99 @@ function App() {
     }));
   };
 
+  const ensureTwitterMirrorProfileLoaded = useCallback(
+    async (twitterUsername: string): Promise<TwitterMirrorProfile | null> => {
+      if (!authHeaders) {
+        return null;
+      }
+
+      const normalized = normalizeTwitterUsername(twitterUsername);
+      if (!normalized) {
+        return null;
+      }
+
+      const cached = newTwitterMirrorProfiles[normalized];
+      if (cached) {
+        return cached;
+      }
+
+      setIsMirrorPreviewLoading(true);
+      try {
+        const response = await axios.post<TwitterMirrorProfile>(
+          '/api/onboarding/twitter-profile',
+          { twitterUsername: normalized },
+          { headers: authHeaders },
+        );
+        setNewTwitterMirrorProfiles((previous) => ({
+          ...previous,
+          [normalized]: response.data,
+        }));
+        return response.data;
+      } catch (error) {
+        handleAuthFailure(error, 'Failed to fetch Twitter profile metadata.');
+        return null;
+      } finally {
+        setIsMirrorPreviewLoading(false);
+      }
+    },
+    [authHeaders, handleAuthFailure, newTwitterMirrorProfiles],
+  );
+
+  const validateAddAccountCredentials = useCallback(async (): Promise<BlueskyCredentialValidation | null> => {
+    if (!authHeaders) {
+      return null;
+    }
+
+    const bskyIdentifier = newMapping.bskyIdentifier.trim();
+    const bskyPassword = newMapping.bskyPassword.trim();
+    const bskyServiceUrl = newMapping.bskyServiceUrl.trim();
+
+    if (!bskyIdentifier || !bskyPassword) {
+      showNotice('error', 'Bluesky identifier and app password are required.');
+      return null;
+    }
+
+    setIsCredentialValidationBusy(true);
+    try {
+      const response = await axios.post<BlueskyCredentialValidation>(
+        '/api/onboarding/bsky-credentials',
+        {
+          bskyIdentifier,
+          bskyPassword,
+          bskyServiceUrl,
+        },
+        { headers: authHeaders },
+      );
+      setValidatedBskyCredentials(response.data);
+      return response.data;
+    } catch (error) {
+      setValidatedBskyCredentials(null);
+      handleAuthFailure(error, 'Failed to validate Bluesky credentials.');
+      return null;
+    } finally {
+      setIsCredentialValidationBusy(false);
+    }
+  }, [
+    authHeaders,
+    handleAuthFailure,
+    newMapping.bskyIdentifier,
+    newMapping.bskyPassword,
+    newMapping.bskyServiceUrl,
+    showNotice,
+  ]);
+
+  useEffect(() => {
+    if (!isAddAccountSheetOpen || addAccountStep !== 1) {
+      return;
+    }
+
+    if (!selectedMirrorSourceUsername) {
+      return;
+    }
+
+    void ensureTwitterMirrorProfileLoaded(selectedMirrorSourceUsername);
+  }, [addAccountStep, ensureTwitterMirrorProfileLoaded, isAddAccountSheetOpen, selectedMirrorSourceUsername]);
+
   const submitNewMapping = async () => {
     if (!authHeaders) {
       return;
@@ -2158,10 +2397,27 @@ function App() {
       return;
     }
 
+    const sourceTwitterUsername = normalizeTwitterUsername(selectedMirrorSourceUsername || newTwitterUsers[0] || '');
+    if (!sourceTwitterUsername) {
+      showNotice('error', 'Select a Twitter source for profile mirroring.');
+      return;
+    }
+
+    const mirrorPreview = await ensureTwitterMirrorProfileLoaded(sourceTwitterUsername);
+    if (!mirrorPreview) {
+      showNotice('error', 'Fetch Twitter metadata before creating this mapping.');
+      return;
+    }
+
+    if (!(validatedBskyCredentials || (await validateAddAccountCredentials()))) {
+      showNotice('error', 'Validate Bluesky credentials before creating this mapping.');
+      return;
+    }
+
     setIsBusy(true);
 
     try {
-      await axios.post(
+      const createResponse = await axios.post<AccountMapping>(
         '/api/mappings',
         {
           owner: newMapping.owner.trim(),
@@ -2175,12 +2431,29 @@ function App() {
         { headers: authHeaders },
       );
 
+      const syncResponse = await axios.post<MirrorProfileSyncResult>(
+        `/api/mappings/${createResponse.data.id}/sync-profile-from-twitter`,
+        {
+          sourceTwitterUsername,
+        },
+        { headers: authHeaders },
+      );
+
+      const warnings = syncResponse.data.warnings || [];
+
       setNewMapping(defaultMappingForm());
       setNewTwitterUsers([]);
       setNewTwitterInput('');
+      setNewTwitterMirrorProfiles({});
+      setSelectedMirrorSourceUsername('');
+      setValidatedBskyCredentials(null);
       setIsAddAccountSheetOpen(false);
       setAddAccountStep(1);
-      showNotice('success', 'Account mapping added.');
+      if (warnings.length > 0) {
+        showNotice('info', `Account mapping added. Profile mirrored with ${warnings.length} warning(s).`);
+      } else {
+        showNotice('success', 'Account mapping added and Bluesky profile mirrored from Twitter.');
+      }
       await fetchData();
     } catch (error) {
       handleAuthFailure(error, 'Failed to add account mapping.');
@@ -2191,19 +2464,32 @@ function App() {
 
   const advanceAddAccountStep = () => {
     if (addAccountStep === 1) {
-      if (!newMapping.owner.trim()) {
-        showNotice('error', 'Owner is required.');
-        return;
-      }
-      setAddAccountStep(2);
-      return;
-    }
-
-    if (addAccountStep === 2) {
       if (newTwitterUsers.length === 0) {
         showNotice('error', 'Add at least one Twitter username.');
         return;
       }
+
+      const sourceTwitterUsername = normalizeTwitterUsername(selectedMirrorSourceUsername || newTwitterUsers[0] || '');
+      if (!sourceTwitterUsername) {
+        showNotice('error', 'Select a Twitter source for profile mirroring.');
+        return;
+      }
+
+      setIsMirrorPreviewLoading(true);
+      void ensureTwitterMirrorProfileLoaded(sourceTwitterUsername)
+        .then((profile) => {
+          if (!profile) {
+            return;
+          }
+          setAddAccountStep(2);
+        })
+        .finally(() => {
+          setIsMirrorPreviewLoading(false);
+        });
+      return;
+    }
+
+    if (addAccountStep === 2) {
       setAddAccountStep(3);
       return;
     }
@@ -2213,7 +2499,18 @@ function App() {
         showNotice('error', 'Bluesky identifier and app password are required.');
         return;
       }
-      setAddAccountStep(4);
+
+      setIsCredentialValidationBusy(true);
+      void validateAddAccountCredentials()
+        .then((validation) => {
+          if (!validation) {
+            return;
+          }
+          setAddAccountStep(4);
+        })
+        .finally(() => {
+          setIsCredentialValidationBusy(false);
+        });
     }
   };
 
@@ -2577,7 +2874,10 @@ function App() {
     }
 
     if (!emailForm.newEmail.trim() || !emailForm.password || (hasCurrentEmail && !emailForm.currentEmail.trim())) {
-      showNotice('error', hasCurrentEmail ? 'Fill in current email, new email, and password.' : 'Fill in new email and password.');
+      showNotice(
+        'error',
+        hasCurrentEmail ? 'Fill in current email, new email, and password.' : 'Fill in new email and password.',
+      );
       return;
     }
 
@@ -3136,6 +3436,7 @@ function App() {
                                       const profileHandle = profile?.handle || mapping.bskyIdentifier;
                                       const profileName = profile?.displayName || profileHandle;
                                       const mappingGroup = getMappingGroupMeta(mapping);
+                                      const syncingProfile = syncingProfileMappingId === mapping.id;
 
                                       return (
                                         <tr
@@ -3230,6 +3531,21 @@ function App() {
                                                     onClick={() => startEditMapping(mapping)}
                                                   >
                                                     Edit
+                                                  </Button>
+                                                  <Button
+                                                    variant="outline"
+                                                    size="sm"
+                                                    disabled={Boolean(syncingProfileMappingId)}
+                                                    onClick={() => {
+                                                      void handleSyncProfileFromTwitter(mapping);
+                                                    }}
+                                                  >
+                                                    {syncingProfile ? (
+                                                      <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                                                    ) : (
+                                                      <RefreshCw className="mr-1 h-4 w-4" />
+                                                    )}
+                                                    Sync Profile
                                                   </Button>
                                                   {canQueueBackfillsPermission ? (
                                                     <>
@@ -4681,11 +4997,231 @@ function App() {
               {addAccountStep === 1 ? (
                 <div className="space-y-4 animate-fade-in">
                   <div className="space-y-1">
-                    <p className="text-sm font-semibold">Who owns this mapping?</p>
-                    <p className="text-xs text-muted-foreground">Set a label so account rows stay easy to scan.</p>
+                    <p className="text-sm font-semibold">Add Twitter source account(s)</p>
+                    <p className="text-xs text-muted-foreground">
+                      Enter one or more usernames. We will preview metadata from your selected source.
+                    </p>
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="add-account-owner">Owner</Label>
+                    <Label htmlFor="add-account-twitter-usernames">Twitter Usernames</Label>
+                    <div className="flex gap-2">
+                      <Input
+                        id="add-account-twitter-usernames"
+                        value={newTwitterInput}
+                        onChange={(event) => {
+                          setNewTwitterInput(event.target.value);
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ',') {
+                            event.preventDefault();
+                            addNewTwitterUsername();
+                          }
+                        }}
+                        placeholder="@accountname"
+                      />
+                      <Button
+                        variant="outline"
+                        type="button"
+                        disabled={normalizeTwitterUsername(newTwitterInput).length === 0}
+                        onClick={addNewTwitterUsername}
+                      >
+                        Add
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="flex min-h-7 flex-wrap gap-2">
+                    {newTwitterUsers.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">No source usernames added yet.</p>
+                    ) : (
+                      newTwitterUsers.map((username) => (
+                        <Badge key={`new-${username}`} variant="secondary" className="gap-1 pr-1">
+                          @{username}
+                          <button
+                            type="button"
+                            className="rounded-full px-1 text-muted-foreground transition hover:bg-background hover:text-foreground"
+                            onClick={() => removeNewTwitterUsername(username)}
+                            aria-label={`Remove @${username}`}
+                          >
+                            ×
+                          </button>
+                        </Badge>
+                      ))
+                    )}
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="add-account-source-select">Profile Mirror Source</Label>
+                    <select
+                      id="add-account-source-select"
+                      className={selectClassName}
+                      value={selectedMirrorSourceUsername}
+                      onChange={(event) => {
+                        setSelectedMirrorSourceUsername(event.target.value);
+                      }}
+                    >
+                      {newTwitterUsers.map((username) => (
+                        <option key={`source-${username}`} value={username}>
+                          @{username}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-2 rounded-lg border border-border/70 bg-muted/30 p-3 text-sm">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="font-medium">Twitter metadata preview</p>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        type="button"
+                        disabled={!selectedMirrorSourceUsername || isMirrorPreviewLoading}
+                        onClick={() => {
+                          if (!selectedMirrorSourceUsername) return;
+                          void ensureTwitterMirrorProfileLoaded(selectedMirrorSourceUsername);
+                        }}
+                      >
+                        {isMirrorPreviewLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                        Refresh preview
+                      </Button>
+                    </div>
+                    {selectedMirrorPreview ? (
+                      <>
+                        <p>
+                          <span className="font-medium">Display name:</span> {selectedMirrorPreview.mirroredDisplayName}
+                        </p>
+                        <p className="whitespace-pre-wrap text-xs text-muted-foreground">
+                          {selectedMirrorPreview.mirroredDescription}
+                        </p>
+                      </>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">
+                        Add a username and fetch preview to confirm the mirrored profile text.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              ) : null}
+
+              {addAccountStep === 2 ? (
+                <div className="space-y-4 animate-fade-in">
+                  <div className="space-y-1">
+                    <p className="text-sm font-semibold">Create Bluesky account (or use existing)</p>
+                    <p className="text-xs text-muted-foreground">
+                      Open Bluesky in a new tab, create account if needed, then generate an app password.
+                    </p>
+                  </div>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <Button asChild variant="outline">
+                      <a href="https://bsky.app" target="_blank" rel="noreferrer">
+                        Create account
+                        <ArrowUpRight className="ml-2 h-4 w-4" />
+                      </a>
+                    </Button>
+                    <Button asChild variant="outline">
+                      <a href="https://bsky.app/settings/app-passwords" target="_blank" rel="noreferrer">
+                        I have an account
+                        <ArrowUpRight className="ml-2 h-4 w-4" />
+                      </a>
+                    </Button>
+                  </div>
+                  <p className="rounded-lg border border-border/70 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                    Keep this drawer open, finish account setup in Bluesky, then continue to enter credentials.
+                  </p>
+                </div>
+              ) : null}
+
+              {addAccountStep === 3 ? (
+                <div className="space-y-4 animate-fade-in">
+                  <div className="space-y-1">
+                    <p className="text-sm font-semibold">Enter Bluesky credentials</p>
+                    <p className="text-xs text-muted-foreground">Support includes custom PDS/service URLs.</p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="add-account-bsky-identifier">Bluesky Identifier</Label>
+                    <Input
+                      id="add-account-bsky-identifier"
+                      value={newMapping.bskyIdentifier}
+                      onChange={(event) => {
+                        setNewMapping((previous) => ({ ...previous, bskyIdentifier: event.target.value }));
+                      }}
+                      placeholder="example.bsky.social"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="add-account-bsky-password">Bluesky App Password</Label>
+                    <Input
+                      id="add-account-bsky-password"
+                      type="password"
+                      value={newMapping.bskyPassword}
+                      onChange={(event) => {
+                        setNewMapping((previous) => ({ ...previous, bskyPassword: event.target.value }));
+                      }}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="add-account-bsky-url">Bluesky Service URL</Label>
+                    <Input
+                      id="add-account-bsky-url"
+                      value={newMapping.bskyServiceUrl}
+                      onChange={(event) => {
+                        setNewMapping((previous) => ({ ...previous, bskyServiceUrl: event.target.value }));
+                      }}
+                      placeholder="https://bsky.social"
+                    />
+                  </div>
+                  <div className="space-y-2 rounded-lg border border-border/70 bg-muted/30 p-3 text-sm">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="font-medium">Credential check</p>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        type="button"
+                        disabled={isCredentialValidationBusy}
+                        onClick={() => {
+                          void validateAddAccountCredentials();
+                        }}
+                      >
+                        {isCredentialValidationBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                        Validate
+                      </Button>
+                    </div>
+                    {validatedBskyCredentials ? (
+                      <p className="text-xs text-muted-foreground">
+                        Authenticated as @{validatedBskyCredentials.handle} on {validatedBskyCredentials.serviceUrl}.
+                      </p>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">
+                        Validate now, or use Next to validate automatically.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              ) : null}
+
+              {addAccountStep === 4 ? (
+                <div className="space-y-4 animate-fade-in">
+                  <div className="space-y-1">
+                    <p className="text-sm font-semibold">Verify email and create mapping</p>
+                    <p className="text-xs text-muted-foreground">
+                      Verify email in Bluesky, then create mapping to auto-sync name, bio, avatar, and banner.
+                    </p>
+                  </div>
+                  <div className="space-y-2 rounded-lg border border-border/70 bg-muted/30 p-3 text-sm">
+                    <p>
+                      <span className="font-medium">Email status:</span>{' '}
+                      {validatedBskyCredentials?.emailConfirmed ? 'confirmed' : 'not confirmed yet'}
+                    </p>
+                    <Button asChild variant="outline" size="sm">
+                      <a
+                        href={validatedBskyCredentials?.settingsUrl || 'https://bsky.app/settings/account'}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Open Bluesky account settings
+                        <ArrowUpRight className="ml-2 h-4 w-4" />
+                      </a>
+                    </Button>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="add-account-owner">Owner (Optional)</Label>
                     <Input
                       id="add-account-owner"
                       value={newMapping.owner}
@@ -4750,114 +5286,6 @@ function App() {
                       />
                     </div>
                   </div>
-                </div>
-              ) : null}
-
-              {addAccountStep === 2 ? (
-                <div className="space-y-4 animate-fade-in">
-                  <div className="space-y-1">
-                    <p className="text-sm font-semibold">Choose Twitter sources</p>
-                    <p className="text-xs text-muted-foreground">
-                      Add one or many usernames. Press Enter or comma to add quickly.
-                    </p>
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="add-account-twitter-usernames">Twitter Usernames</Label>
-                    <div className="flex gap-2">
-                      <Input
-                        id="add-account-twitter-usernames"
-                        value={newTwitterInput}
-                        onChange={(event) => {
-                          setNewTwitterInput(event.target.value);
-                        }}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter' || event.key === ',') {
-                            event.preventDefault();
-                            addNewTwitterUsername();
-                          }
-                        }}
-                        placeholder="@accountname"
-                      />
-                      <Button
-                        variant="outline"
-                        type="button"
-                        disabled={normalizeTwitterUsername(newTwitterInput).length === 0}
-                        onClick={addNewTwitterUsername}
-                      >
-                        Add
-                      </Button>
-                    </div>
-                  </div>
-                  <div className="flex min-h-7 flex-wrap gap-2">
-                    {newTwitterUsers.length === 0 ? (
-                      <p className="text-xs text-muted-foreground">No source usernames added yet.</p>
-                    ) : (
-                      newTwitterUsers.map((username) => (
-                        <Badge key={`new-${username}`} variant="secondary" className="gap-1 pr-1">
-                          @{username}
-                          <button
-                            type="button"
-                            className="rounded-full px-1 text-muted-foreground transition hover:bg-background hover:text-foreground"
-                            onClick={() => removeNewTwitterUsername(username)}
-                            aria-label={`Remove @${username}`}
-                          >
-                            ×
-                          </button>
-                        </Badge>
-                      ))
-                    )}
-                  </div>
-                </div>
-              ) : null}
-
-              {addAccountStep === 3 ? (
-                <div className="space-y-4 animate-fade-in">
-                  <div className="space-y-1">
-                    <p className="text-sm font-semibold">Target Bluesky account</p>
-                    <p className="text-xs text-muted-foreground">Use an app password for the destination account.</p>
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="add-account-bsky-identifier">Bluesky Identifier</Label>
-                    <Input
-                      id="add-account-bsky-identifier"
-                      value={newMapping.bskyIdentifier}
-                      onChange={(event) => {
-                        setNewMapping((previous) => ({ ...previous, bskyIdentifier: event.target.value }));
-                      }}
-                      placeholder="example.bsky.social"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="add-account-bsky-password">Bluesky App Password</Label>
-                    <Input
-                      id="add-account-bsky-password"
-                      type="password"
-                      value={newMapping.bskyPassword}
-                      onChange={(event) => {
-                        setNewMapping((previous) => ({ ...previous, bskyPassword: event.target.value }));
-                      }}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="add-account-bsky-url">Bluesky Service URL</Label>
-                    <Input
-                      id="add-account-bsky-url"
-                      value={newMapping.bskyServiceUrl}
-                      onChange={(event) => {
-                        setNewMapping((previous) => ({ ...previous, bskyServiceUrl: event.target.value }));
-                      }}
-                      placeholder="https://bsky.social"
-                    />
-                  </div>
-                </div>
-              ) : null}
-
-              {addAccountStep === 4 ? (
-                <div className="space-y-4 animate-fade-in">
-                  <div className="space-y-1">
-                    <p className="text-sm font-semibold">Review and create</p>
-                    <p className="text-xs text-muted-foreground">Confirm details before saving this mapping.</p>
-                  </div>
                   <div className="space-y-2 rounded-lg border border-border/70 bg-muted/30 p-3 text-sm">
                     <p>
                       <span className="font-medium">Owner:</span> {newMapping.owner || '--'}
@@ -4869,6 +5297,15 @@ function App() {
                     <p>
                       <span className="font-medium">Bluesky Target:</span> {newMapping.bskyIdentifier || '--'}
                     </p>
+                    <p>
+                      <span className="font-medium">Mirror Source:</span>{' '}
+                      {selectedMirrorSourceUsername ? `@${selectedMirrorSourceUsername}` : '--'}
+                    </p>
+                    {selectedMirrorPreview ? (
+                      <p className="whitespace-pre-wrap text-xs text-muted-foreground">
+                        {selectedMirrorPreview.mirroredDescription}
+                      </p>
+                    ) : null}
                     <p>
                       <span className="font-medium">Folder:</span>{' '}
                       {newMapping.groupName.trim()
@@ -4886,7 +5323,10 @@ function App() {
                 Back
               </Button>
               {addAccountStep < ADD_ACCOUNT_STEP_COUNT ? (
-                <Button onClick={advanceAddAccountStep}>
+                <Button
+                  onClick={advanceAddAccountStep}
+                  disabled={isBusy || isMirrorPreviewLoading || isCredentialValidationBusy}
+                >
                   Next
                   <ChevronRight className="ml-2 h-4 w-4" />
                 </Button>

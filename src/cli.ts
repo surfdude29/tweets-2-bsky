@@ -6,15 +6,20 @@ import { Command } from 'commander';
 import inquirer from 'inquirer';
 import { deleteAllPosts } from './bsky.js';
 import {
+  type AccountMapping,
+  type AppConfig,
   addMapping,
   getConfig,
   removeMapping,
   saveConfig,
   updateTwitterConfig,
-  type AccountMapping,
-  type AppConfig,
 } from './config-manager.js';
 import { dbService } from './db.js';
+import {
+  fetchTwitterMirrorProfile,
+  syncBlueskyProfileFromTwitter,
+  validateBlueskyCredentials,
+} from './profile-mirror.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -155,10 +160,7 @@ const importConfig = (inputFile: string) => {
 
 const program = new Command();
 
-program
-  .name('tweets-2-bsky-cli')
-  .description('CLI for full Tweets -> Bluesky dashboard workflows')
-  .version('2.1.0');
+program.name('tweets-2-bsky-cli').description('CLI for full Tweets -> Bluesky dashboard workflows').version('2.1.0');
 
 program
   .command('setup-ai')
@@ -255,19 +257,60 @@ program
 
 program
   .command('add-mapping')
-  .description('Add a new Twitter -> Bluesky mapping')
+  .description('Add a new Twitter -> Bluesky mapping with guided onboarding')
   .action(async () => {
+    const config = getConfig();
+    const ownerDefault =
+      config.users.find((user) => user.role === 'admin')?.username || config.users[0]?.username || '';
+
     const answers = await inquirer.prompt([
-      {
-        type: 'input',
-        name: 'owner',
-        message: 'Owner name:',
-      },
       {
         type: 'input',
         name: 'twitterUsernames',
         message: 'Twitter username(s) to watch (comma separated, without @):',
       },
+    ]);
+
+    const usernames = String(answers.twitterUsernames || '')
+      .split(',')
+      .map((username: string) => normalizeHandle(username))
+      .filter((username: string) => username.length > 0);
+
+    if (usernames.length === 0) {
+      console.log('Please provide at least one Twitter username.');
+      return;
+    }
+
+    const accountFlow = await inquirer.prompt([
+      {
+        type: 'list',
+        name: 'accountState',
+        message: 'Bluesky account setup:',
+        choices: [
+          { name: 'Open bsky.app and create a new account', value: 'create' },
+          { name: 'I already have a Bluesky account', value: 'existing' },
+        ],
+      },
+    ]);
+
+    if (accountFlow.accountState === 'create') {
+      console.log('Open https://bsky.app to create the account, then generate an app password.');
+      const continueAnswer = await inquirer.prompt([
+        {
+          type: 'confirm',
+          name: 'continueAfterCreate',
+          message: 'Continue once your Bluesky account exists?',
+          default: true,
+        },
+      ]);
+
+      if (!continueAnswer.continueAfterCreate) {
+        console.log('Cancelled.');
+        return;
+      }
+    }
+
+    const bskyAnswers = await inquirer.prompt([
       {
         type: 'input',
         name: 'bskyIdentifier',
@@ -284,6 +327,58 @@ program
         message: 'Bluesky service URL:',
         default: 'https://bsky.social',
       },
+    ]);
+
+    let validation: Awaited<ReturnType<typeof validateBlueskyCredentials>>;
+    try {
+      validation = await validateBlueskyCredentials({
+        bskyIdentifier: bskyAnswers.bskyIdentifier,
+        bskyPassword: bskyAnswers.bskyPassword,
+        bskyServiceUrl: bskyAnswers.bskyServiceUrl,
+      });
+      console.log(`Authenticated as @${validation.handle} on ${validation.serviceUrl}.`);
+      if (validation.emailConfirmed) {
+        console.log('Email status: confirmed ✅');
+      } else {
+        console.log('Email status: not confirmed yet ⚠️ (media upload features may be limited until verified).');
+      }
+      console.log(`Verify email from: ${validation.settingsUrl}`);
+    } catch (error) {
+      console.log(`Bluesky credential validation failed: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+
+    const continueAfterVerify = await inquirer.prompt([
+      {
+        type: 'confirm',
+        name: 'continueAfterVerify',
+        message: 'Continue with mapping creation and profile mirror sync now?',
+        default: validation.emailConfirmed,
+      },
+    ]);
+
+    if (!continueAfterVerify.continueAfterVerify) {
+      console.log('Cancelled.');
+      return;
+    }
+
+    try {
+      const preview = await fetchTwitterMirrorProfile(usernames[0] || '');
+      console.log(`Twitter mirror preview from @${preview.username}:`);
+      console.log(`  Display name -> ${preview.mirroredDisplayName}`);
+      console.log(`  Bio preview  -> ${JSON.stringify(preview.mirroredDescription)}`);
+    } catch (error) {
+      console.log(`Twitter metadata preview failed: ${error instanceof Error ? error.message : String(error)}`);
+      console.log('Continuing. You can retry profile sync later with sync-profile.');
+    }
+
+    const metadataAnswers = await inquirer.prompt([
+      {
+        type: 'input',
+        name: 'owner',
+        message: 'Owner name (optional):',
+        default: ownerDefault,
+      },
       {
         type: 'input',
         name: 'groupName',
@@ -294,23 +389,109 @@ program
         name: 'groupEmoji',
         message: 'Group emoji icon (optional):',
       },
+      {
+        type: 'list',
+        name: 'mirrorSourceUsername',
+        message: 'Use which Twitter source for profile mirror metadata?',
+        choices: usernames.map((username) => ({
+          name: `@${username}`,
+          value: username,
+        })),
+        default: usernames[0],
+      },
     ]);
 
-    const usernames = answers.twitterUsernames
-      .split(',')
-      .map((username: string) => username.trim())
-      .filter((username: string) => username.length > 0);
-
     addMapping({
-      owner: answers.owner,
+      owner: metadataAnswers.owner,
       twitterUsernames: usernames,
-      bskyIdentifier: answers.bskyIdentifier,
-      bskyPassword: answers.bskyPassword,
-      bskyServiceUrl: answers.bskyServiceUrl,
-      groupName: answers.groupName?.trim() || undefined,
-      groupEmoji: answers.groupEmoji?.trim() || undefined,
+      bskyIdentifier: bskyAnswers.bskyIdentifier,
+      bskyPassword: bskyAnswers.bskyPassword,
+      bskyServiceUrl: bskyAnswers.bskyServiceUrl,
+      groupName: metadataAnswers.groupName?.trim() || undefined,
+      groupEmoji: metadataAnswers.groupEmoji?.trim() || undefined,
     });
-    console.log('Mapping added successfully.');
+
+    const latestConfig = getConfig();
+    const createdMapping = [...latestConfig.mappings]
+      .reverse()
+      .find(
+        (mapping) =>
+          normalizeHandle(mapping.bskyIdentifier) === normalizeHandle(bskyAnswers.bskyIdentifier) &&
+          normalizeHandle(mapping.bskyServiceUrl || 'https://bsky.social') ===
+            normalizeHandle(bskyAnswers.bskyServiceUrl || 'https://bsky.social') &&
+          mapping.twitterUsernames.length === usernames.length &&
+          mapping.twitterUsernames.every(
+            (username, index) => normalizeHandle(username) === normalizeHandle(usernames[index] || ''),
+          ),
+      );
+
+    if (!createdMapping) {
+      console.log('Mapping added, but could not locate it for automatic profile sync.');
+      return;
+    }
+
+    try {
+      const syncResult = await syncBlueskyProfileFromTwitter({
+        twitterUsername: metadataAnswers.mirrorSourceUsername,
+        bskyIdentifier: createdMapping.bskyIdentifier,
+        bskyPassword: createdMapping.bskyPassword,
+        bskyServiceUrl: createdMapping.bskyServiceUrl,
+      });
+      console.log('Mapping added successfully. Bluesky profile mirror sync completed.');
+      if (syncResult.warnings.length > 0) {
+        console.log('Profile sync warnings:');
+        for (const warning of syncResult.warnings) {
+          console.log(`  - ${warning}`);
+        }
+      }
+    } catch (error) {
+      console.log('Mapping added successfully, but automatic profile sync failed.');
+      console.log(`Reason: ${error instanceof Error ? error.message : String(error)}`);
+      console.log('Run `npm run cli -- sync-profile` later to retry.');
+    }
+  });
+
+program
+  .command('sync-profile [mapping]')
+  .description('Sync Bluesky profile from a mapped Twitter source')
+  .option('-s, --source <username>', 'Twitter source username to mirror from')
+  .action(async (mappingRef?: string, options?: { source?: string }) => {
+    const mapping = await ensureMapping(mappingRef);
+    if (!mapping) return;
+
+    const requestedSource = options?.source ? normalizeHandle(options.source) : '';
+    if (
+      requestedSource &&
+      !mapping.twitterUsernames.some((username) => normalizeHandle(username) === normalizeHandle(requestedSource))
+    ) {
+      console.log(`@${requestedSource} is not part of the selected mapping.`);
+      return;
+    }
+
+    const sourceTwitterUsername = requestedSource || mapping.twitterUsernames[0];
+    if (!sourceTwitterUsername) {
+      console.log('Mapping has no Twitter source usernames.');
+      return;
+    }
+
+    try {
+      const result = await syncBlueskyProfileFromTwitter({
+        twitterUsername: sourceTwitterUsername,
+        bskyIdentifier: mapping.bskyIdentifier,
+        bskyPassword: mapping.bskyPassword,
+        bskyServiceUrl: mapping.bskyServiceUrl,
+      });
+
+      console.log(`Profile sync completed for ${mapping.bskyIdentifier} from @${result.twitterProfile.username}.`);
+      if (result.warnings.length > 0) {
+        console.log('Warnings:');
+        for (const warning of result.warnings) {
+          console.log(`  - ${warning}`);
+        }
+      }
+    } catch (error) {
+      console.log(`Profile sync failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
   });
 
 program
@@ -517,7 +698,13 @@ program
     const mapping = await ensureMapping(mappingRef);
     if (!mapping) return;
 
-    const args = ['--run-once', '--backfill-mapping', mapping.id, '--backfill-limit', String(parsePositiveInt(options.limit, 15))];
+    const args = [
+      '--run-once',
+      '--backfill-mapping',
+      mapping.id,
+      '--backfill-limit',
+      String(parsePositiveInt(options.limit, 15)),
+    ];
     if (options.dryRun) args.push('--dry-run');
     if (!options.web) args.push('--no-web');
 

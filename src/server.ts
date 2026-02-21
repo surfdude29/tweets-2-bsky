@@ -22,6 +22,11 @@ import {
 } from './config-manager.js';
 import { dbService } from './db.js';
 import type { ProcessedTweet } from './db.js';
+import {
+  fetchTwitterMirrorProfile,
+  syncBlueskyProfileFromTwitter,
+  validateBlueskyCredentials,
+} from './profile-mirror.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -545,11 +550,7 @@ async function fetchPostViewsByUri(uris: string[]): Promise<Map<string, any>> {
     const params = new URLSearchParams();
     for (const uri of chunk) params.append('uris', uri);
 
-    const responseData = await fetchAppview(
-      '/xrpc/app.bsky.feed.getPosts',
-      params,
-      `getPosts chunk=${chunk.length}`,
-    );
+    const responseData = await fetchAppview('/xrpc/app.bsky.feed.getPosts', params, `getPosts chunk=${chunk.length}`);
     if (!responseData) {
       continue;
     }
@@ -796,6 +797,22 @@ const normalizeOptionalString = (value: unknown): string | undefined => {
   return normalized.length > 0 ? normalized : undefined;
 };
 
+const getErrorMessage = (error: unknown, fallback = 'Request failed.'): string => {
+  if (axios.isAxiosError(error)) {
+    const apiError = error.response?.data as { error?: unknown } | undefined;
+    if (typeof apiError?.error === 'string' && apiError.error.length > 0) {
+      return apiError.error;
+    }
+    if (typeof error.message === 'string' && error.message.length > 0) {
+      return error.message;
+    }
+  }
+  if (error instanceof Error && error.message.length > 0) {
+    return error.message;
+  }
+  return fallback;
+};
+
 const normalizeBoolean = (value: unknown, fallback: boolean): boolean => {
   if (typeof value === 'boolean') {
     return value;
@@ -811,7 +828,8 @@ const getUserPublicLabel = (user: Pick<WebUser, 'id' | 'username'>): string =>
 const getUserDisplayLabel = (user: Pick<WebUser, 'id' | 'username' | 'email'>): string =>
   user.username || user.email || `user-${user.id.slice(0, 8)}`;
 
-const getActorLabel = (actor: AuthenticatedUser): string => actor.username || actor.email || `user-${actor.id.slice(0, 8)}`;
+const getActorLabel = (actor: AuthenticatedUser): string =>
+  actor.username || actor.email || `user-${actor.id.slice(0, 8)}`;
 
 const getActorPublicLabel = (actor: AuthenticatedUser): string => actor.username || `user-${actor.id.slice(0, 8)}`;
 
@@ -1802,6 +1820,53 @@ app.delete('/api/groups/:groupKey', authenticateToken, (req: any, res) => {
   res.json({ success: true, reassignedCount: reassigned });
 });
 
+app.post('/api/onboarding/twitter-profile', authenticateToken, async (req: any, res) => {
+  if (!canManageOwnMappings(req.user) && !canManageAllMappings(req.user)) {
+    res.status(403).json({ error: 'You do not have permission to create mappings.' });
+    return;
+  }
+
+  const twitterUsername = normalizeActor(req.body?.twitterUsername || '');
+  if (!twitterUsername) {
+    res.status(400).json({ error: 'Twitter username is required.' });
+    return;
+  }
+
+  try {
+    const profile = await fetchTwitterMirrorProfile(twitterUsername);
+    res.json(profile);
+  } catch (error) {
+    res.status(400).json({ error: getErrorMessage(error, 'Failed to fetch Twitter profile metadata.') });
+  }
+});
+
+app.post('/api/onboarding/bsky-credentials', authenticateToken, async (req: any, res) => {
+  if (!canManageOwnMappings(req.user) && !canManageAllMappings(req.user)) {
+    res.status(403).json({ error: 'You do not have permission to create mappings.' });
+    return;
+  }
+
+  const bskyIdentifier = normalizeOptionalString(req.body?.bskyIdentifier);
+  const bskyPassword = normalizeOptionalString(req.body?.bskyPassword);
+  const bskyServiceUrl = normalizeOptionalString(req.body?.bskyServiceUrl);
+
+  if (!bskyIdentifier || !bskyPassword) {
+    res.status(400).json({ error: 'Bluesky identifier and app password are required.' });
+    return;
+  }
+
+  try {
+    const validation = await validateBlueskyCredentials({
+      bskyIdentifier,
+      bskyPassword,
+      bskyServiceUrl,
+    });
+    res.json(validation);
+  } catch (error) {
+    res.status(400).json({ error: getErrorMessage(error, 'Failed to validate Bluesky credentials.') });
+  }
+});
+
 app.post('/api/mappings', authenticateToken, (req: any, res) => {
   if (!canManageOwnMappings(req.user) && !canManageAllMappings(req.user)) {
     res.status(403).json({ error: 'You do not have permission to create mappings.' });
@@ -1839,7 +1904,8 @@ app.post('/api/mappings', authenticateToken, (req: any, res) => {
 
   const ownerUser = usersById.get(createdByUserId);
   const owner =
-    normalizeOptionalString(req.body?.owner) || (ownerUser ? getUserPublicLabel(ownerUser) : getActorPublicLabel(req.user));
+    normalizeOptionalString(req.body?.owner) ||
+    (ownerUser ? getUserPublicLabel(ownerUser) : getActorPublicLabel(req.user));
   const normalizedGroupName = normalizeGroupName(req.body?.groupName);
   const normalizedGroupEmoji = normalizeGroupEmoji(req.body?.groupEmoji);
 
@@ -1947,6 +2013,60 @@ app.put('/api/mappings/:id', authenticateToken, (req: any, res) => {
   config.mappings[index] = updatedMapping;
   saveConfig(config);
   res.json(sanitizeMapping(updatedMapping, createUserLookupById(config), req.user));
+});
+
+app.post('/api/mappings/:id/sync-profile-from-twitter', authenticateToken, async (req: any, res) => {
+  const { id } = req.params;
+  const config = getConfig();
+  const mapping = config.mappings.find((entry) => entry.id === id);
+
+  if (!mapping) {
+    res.status(404).json({ error: 'Mapping not found' });
+    return;
+  }
+
+  if (!canManageMapping(req.user, mapping)) {
+    res.status(403).json({ error: 'You do not have permission to update this mapping.' });
+    return;
+  }
+
+  const requestedSource = normalizeActor(req.body?.sourceTwitterUsername || '');
+  if (
+    requestedSource &&
+    !mapping.twitterUsernames.some((username) => normalizeActor(username) === normalizeActor(requestedSource))
+  ) {
+    res.status(400).json({ error: 'Selected Twitter source is not part of this mapping.' });
+    return;
+  }
+
+  const sourceTwitterUsername = requestedSource || mapping.twitterUsernames[0];
+  if (!sourceTwitterUsername) {
+    res.status(400).json({ error: 'Mapping has no Twitter source usernames.' });
+    return;
+  }
+
+  try {
+    const result = await syncBlueskyProfileFromTwitter({
+      twitterUsername: sourceTwitterUsername,
+      bskyIdentifier: mapping.bskyIdentifier,
+      bskyPassword: mapping.bskyPassword,
+      bskyServiceUrl: mapping.bskyServiceUrl,
+    });
+
+    for (const key of [
+      normalizeActor(mapping.bskyIdentifier),
+      normalizeActor(result.bsky.handle),
+      normalizeActor(result.bsky.did),
+    ]) {
+      if (key) {
+        profileCache.delete(key);
+      }
+    }
+
+    res.json({ success: true, ...result });
+  } catch (error) {
+    res.status(400).json({ error: getErrorMessage(error, 'Failed to sync Bluesky profile from Twitter.') });
+  }
 });
 
 app.delete('/api/mappings/:id', authenticateToken, (req: any, res) => {
