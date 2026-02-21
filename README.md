@@ -2,9 +2,70 @@
 
 Crosspost posts from Twitter/X to Bluesky with thread support, media handling, account mapping, and a web dashboard.
 
-## Quick Start (Easy Mode)
+## Quick Start (Recommended: Docker)
 
-If you are comfortable with terminal basics but do not want to manage PM2 manually, use the installer script.
+Most people should use Docker. It is the simplest setup and includes full feature parity (backend API + scheduler + frontend dashboard + Chromium).
+
+Prerequisite: Docker Desktop (Windows/macOS) or Docker Engine (Linux). On Windows, use Docker Desktop in Linux container mode.
+
+### 1) Run the latest image
+
+macOS/Linux (bash):
+
+```bash
+docker run -d \
+  --name tweets-2-bsky \
+  -p 3000:3000 \
+  -v tweets2bsky_data:/app/data \
+  --restart unless-stopped \
+  j4ckxyz/tweets-2-bsky:latest
+```
+
+Windows (PowerShell):
+
+```powershell
+docker run -d --name tweets-2-bsky -p 3000:3000 -v tweets2bsky_data:/app/data --restart unless-stopped j4ckxyz/tweets-2-bsky:latest
+```
+
+Open `http://localhost:3000`.
+
+If port `3000` is already in use, change only the first port (example: `-p 3001:3000`).
+
+### 2) Complete first-time setup
+
+1. Register the first user (this user becomes admin).
+2. Add Twitter cookies in Settings.
+3. Add at least one mapping.
+4. Click `Run now`.
+
+### 3) Useful Docker commands
+
+```bash
+docker logs -f tweets-2-bsky
+docker exec -it tweets-2-bsky node dist/cli.js status
+docker stop tweets-2-bsky
+docker start tweets-2-bsky
+```
+
+### 4) Update to newest release
+
+```bash
+docker pull j4ckxyz/tweets-2-bsky:latest
+docker stop tweets-2-bsky
+docker rm tweets-2-bsky
+docker run -d \
+  --name tweets-2-bsky \
+  -p 3000:3000 \
+  -v tweets2bsky_data:/app/data \
+  --restart unless-stopped \
+  j4ckxyz/tweets-2-bsky:latest
+```
+
+Alternative image registry: `ghcr.io/j4ckxyz/tweets-2-bsky:latest`.
+
+## Source Install Quick Start (No Docker)
+
+If you prefer running from source and do not want to manage PM2 manually, use the installer script.
 
 ### 1) Clone the repo
 
@@ -30,15 +91,6 @@ What this does by default:
   - otherwise uses `nohup`
 - prints your local web URL (for example `http://localhost:3000`)
 
-### 3) Open the dashboard
-
-Open the printed URL in your browser, then:
-
-1. Register the first user (this user becomes admin).
-2. Add Twitter cookies in Settings.
-3. Add at least one mapping.
-4. Click `Run now`.
-
 ### Useful installer commands
 
 ```bash
@@ -51,7 +103,9 @@ Open the printed URL in your browser, then:
 ./install.sh --skip-native-rebuild
 ```
 
-If you prefer full manual setup, skip to [Manual Setup](#manual-setup-technical). For a portable single-container setup, use [Docker](#docker-single-container-backend--frontend--scheduler).
+If you prefer full manual source setup details, skip to [Manual Setup](#manual-setup-technical).
+
+After source install starts, open `http://localhost:3000` and follow the first-time setup steps in [Quick Start](#quick-start-recommended-docker).
 
 ## Docker (Single-Container, Backend + Frontend + Scheduler)
 
@@ -74,7 +128,7 @@ docker run -d \
   -p 3000:3000 \
   -v tweets2bsky_data:/app/data \
   --restart unless-stopped \
-  ghcr.io/j4ckxyz/tweets-2-bsky:latest
+  j4ckxyz/tweets-2-bsky:latest
 ```
 
 Open `http://localhost:3000`.
@@ -82,8 +136,10 @@ Open `http://localhost:3000`.
 PowerShell equivalent:
 
 ```powershell
-docker run -d --name tweets-2-bsky -p 3000:3000 -v tweets2bsky_data:/app/data --restart unless-stopped ghcr.io/j4ckxyz/tweets-2-bsky:latest
+docker run -d --name tweets-2-bsky -p 3000:3000 -v tweets2bsky_data:/app/data --restart unless-stopped j4ckxyz/tweets-2-bsky:latest
 ```
+
+Alternative registry mirror: `ghcr.io/j4ckxyz/tweets-2-bsky:latest`.
 
 ### 2) Build locally (if you do not want to pull)
 
@@ -108,7 +164,7 @@ docker run -d \
   -p 3000:3000 \
   -v tweets2bsky_data:/app/data \
   --env-file .env \
-  ghcr.io/j4ckxyz/tweets-2-bsky:latest
+  j4ckxyz/tweets-2-bsky:latest
 ```
 
 Common variables:
@@ -144,7 +200,7 @@ docker exec -it tweets-2-bsky node dist/cli.js list
 For Docker installs, update by pulling a newer image and recreating the container with the same volume:
 
 ```bash
-docker pull ghcr.io/j4ckxyz/tweets-2-bsky:latest
+docker pull j4ckxyz/tweets-2-bsky:latest
 docker stop tweets-2-bsky
 docker rm tweets-2-bsky
 docker run -d \
@@ -152,7 +208,7 @@ docker run -d \
   -p 3000:3000 \
   -v tweets2bsky_data:/app/data \
   --restart unless-stopped \
-  ghcr.io/j4ckxyz/tweets-2-bsky:latest
+  j4ckxyz/tweets-2-bsky:latest
 ```
 
 ### 7) Platform support
@@ -184,10 +240,10 @@ gh secret set DOCKERHUB_USERNAME --body "<dockerhub-username>"
 gh secret set DOCKERHUB_TOKEN --body "<dockerhub-access-token>"
 ```
 
-If you keep your default branch as `master`, users can always pull the newest build with:
+Users can always pull the newest build with:
 
 ```bash
-docker pull ghcr.io/j4ckxyz/tweets-2-bsky:latest
+docker pull j4ckxyz/tweets-2-bsky:latest
 ```
 
 #### Option A: GitHub Container Registry (GHCR)
@@ -276,16 +332,21 @@ Notes:
 
 ## Requirements
 
+Recommended runtime:
+
+- Docker Desktop / Docker Engine
+
+If running from source instead of Docker:
+
 - Node.js 22+
 - npm
 - git
 
-Optional but recommended:
+Optional but recommended for source installs:
 
 - PM2 (for managed background runtime)
 - Chrome/Chromium (used for some quote-tweet screenshot fallbacks)
 - build tools for native modules (`better-sqlite3`) if your platform needs source compilation
-- Docker Desktop / Docker Engine (if using containerized deployment)
 
 ## Manual Setup (Technical)
 
