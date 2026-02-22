@@ -753,7 +753,11 @@ if (allowedOrigins.size === 0) {
 }
 app.use(express.json());
 
-app.use(express.static(staticAssetsDir));
+app.use(
+  express.static(staticAssetsDir, {
+    index: false,
+  }),
+);
 
 interface AuthenticatedUser {
   id: string;
@@ -2720,6 +2724,9 @@ export function clearBackfill(id: string, requestId?: string) {
 
 // Serve the frontend for any other route (middleware approach for Express 5)
 app.use((_req, res) => {
+  res.setHeader('Cache-Control', 'no-store, max-age=0, must-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
   res.sendFile(path.join(staticAssetsDir, 'index.html'));
 });
 
