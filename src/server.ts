@@ -26,7 +26,6 @@ import {
   applyProfileMirrorSyncState,
   bridgeBlueskyAccountToFediverse,
   fetchTwitterMirrorProfile,
-  getFediverseBridgeStatus,
   syncBlueskyProfileFromTwitter,
   validateBlueskyCredentials,
 } from './profile-mirror.js';
@@ -60,6 +59,8 @@ const APPVIEW_PROFILE_CHUNK_SIZE = 25;
 const APPVIEW_MAX_ATTEMPTS = 2;
 const APPVIEW_RETRY_DELAY_MS = 700;
 const FEDIVERSE_BRIDGE_STATUS_CHUNK_SIZE = 2;
+const FEDIVERSE_BRIDGE_STATUS_CACHE_TTL_MS = 10 * 60_000;
+const FEDIVERSE_BRIDGE_HANDLES = ['ap.brid.gy', 'bsky.brid.gy'];
 
 function loadPersistedJwtSecret(): string | undefined {
   if (!fs.existsSync(JWT_SECRET_FILE_PATH)) {
@@ -217,6 +218,8 @@ interface UpdateStatusPayload {
 
 const postViewCache = new Map<string, CacheEntry<any>>();
 const profileCache = new Map<string, CacheEntry<BskyProfileView>>();
+const fediverseBridgeStatusCache = new Map<string, CacheEntry<FediverseBridgeStatusView>>();
+let fediverseBridgeActorIdsCache: CacheEntry<Set<string>> | null = null;
 
 function chunkArray<T>(items: T[], size: number): T[][] {
   if (size <= 0) return [items];
@@ -637,6 +640,144 @@ async function fetchProfilesByActor(actors: string[]): Promise<Record<string, Bs
     const cached = profileCache.get(actor);
     if (cached && cached.expiresAt > nowMs()) {
       result[actor] = cached.value;
+    }
+  }
+
+  return result;
+}
+
+async function getFediverseBridgeActorIds(): Promise<Set<string>> {
+  const cached = fediverseBridgeActorIdsCache;
+  if (cached && cached.expiresAt > nowMs()) {
+    return new Set(cached.value);
+  }
+
+  const ids = new Set<string>(FEDIVERSE_BRIDGE_HANDLES.map((handle) => normalizeActor(handle)));
+  const profiles = await fetchProfilesByActor(FEDIVERSE_BRIDGE_HANDLES);
+  for (const profile of Object.values(profiles)) {
+    if (typeof profile?.handle === 'string' && profile.handle.length > 0) {
+      ids.add(normalizeActor(profile.handle));
+    }
+    if (typeof profile?.did === 'string' && profile.did.length > 0) {
+      ids.add(normalizeActor(profile.did));
+    }
+  }
+
+  fediverseBridgeActorIdsCache = {
+    value: ids,
+    expiresAt: nowMs() + PROFILE_CACHE_TTL_MS,
+  };
+
+  return new Set(ids);
+}
+
+async function isActorFollowingFediverseBridge(actor: string): Promise<FediverseBridgeStatusView> {
+  const normalizedActor = normalizeActor(actor);
+  const checkedAt = new Date().toISOString();
+  if (!normalizedActor) {
+    return {
+      bridged: false,
+      checkedAt,
+      error: 'Missing actor identifier.',
+    };
+  }
+
+  const bridgeActorIds = await getFediverseBridgeActorIds();
+  let cursor: string | undefined;
+  let pageCount = 0;
+
+  while (pageCount < 200) {
+    pageCount += 1;
+    const params = new URLSearchParams();
+    params.set('actor', normalizedActor);
+    params.set('limit', '100');
+    if (cursor) {
+      params.set('cursor', cursor);
+    }
+
+    const responseData = await fetchAppview(
+      '/xrpc/app.bsky.graph.getFollows',
+      params,
+      `getFollows actor=${normalizedActor}`,
+    );
+    if (!responseData) {
+      return {
+        bridged: false,
+        checkedAt,
+        error: 'Failed to read follows from Bluesky AppView.',
+      };
+    }
+
+    const follows = Array.isArray(responseData.follows) ? responseData.follows : [];
+    for (const follow of follows) {
+      const followedHandle = typeof follow?.handle === 'string' ? normalizeActor(follow.handle) : '';
+      const followedDid = typeof follow?.did === 'string' ? normalizeActor(follow.did) : '';
+      if ((followedHandle && bridgeActorIds.has(followedHandle)) || (followedDid && bridgeActorIds.has(followedDid))) {
+        return {
+          bridged: true,
+          checkedAt,
+        };
+      }
+    }
+
+    cursor =
+      typeof responseData.cursor === 'string' && responseData.cursor.length > 0 ? responseData.cursor : undefined;
+    if (!cursor) {
+      break;
+    }
+  }
+
+  return {
+    bridged: false,
+    checkedAt,
+  };
+}
+
+async function fetchFediverseBridgeStatusesByActor(
+  actors: string[],
+): Promise<Record<string, FediverseBridgeStatusView>> {
+  const uniqueActors = [...new Set(actors.map(normalizeActor).filter((actor) => actor.length > 0))];
+  const result: Record<string, FediverseBridgeStatusView> = {};
+  const pendingActors: string[] = [];
+
+  for (const actor of uniqueActors) {
+    const cached = fediverseBridgeStatusCache.get(actor);
+    if (cached && cached.expiresAt > nowMs()) {
+      result[actor] = cached.value;
+      continue;
+    }
+    pendingActors.push(actor);
+  }
+
+  for (const chunk of chunkArray(pendingActors, FEDIVERSE_BRIDGE_STATUS_CHUNK_SIZE)) {
+    if (chunk.length === 0) {
+      continue;
+    }
+
+    const chunkResults = await Promise.all(
+      chunk.map(async (actor) => {
+        try {
+          const status = await isActorFollowingFediverseBridge(actor);
+          return { actor, status };
+        } catch (error) {
+          return {
+            actor,
+            status: {
+              bridged: false,
+              checkedAt: new Date().toISOString(),
+              error: getErrorMessage(error, 'Failed to check fediverse bridge status.'),
+            } satisfies FediverseBridgeStatusView,
+          };
+        }
+      }),
+    );
+
+    for (const item of chunkResults) {
+      fediverseBridgeStatusCache.set(item.actor, {
+        value: item.status,
+        expiresAt: nowMs() + FEDIVERSE_BRIDGE_STATUS_CACHE_TTL_MS,
+      });
+      result[item.actor] = item.status;
     }
   }
 
@@ -2214,6 +2355,15 @@ app.post('/api/mappings/:id/bridge-to-fediverse', authenticateToken, async (req:
       bskyPassword: mapping.bskyPassword,
       bskyServiceUrl: mapping.bskyServiceUrl,
     });
+
+    fediverseBridgeStatusCache.set(normalizeActor(mapping.bskyIdentifier), {
+      value: {
+        bridged: true,
+        checkedAt: new Date().toISOString(),
+      },
+      expiresAt: nowMs() + FEDIVERSE_BRIDGE_STATUS_CACHE_TTL_MS,
+    });
+
     res.json({ success: true, ...result });
   } catch (error) {
     res.status(400).json({ error: getErrorMessage(error, 'Failed to bridge account to the fediverse.') });
@@ -2235,52 +2385,49 @@ app.post('/api/mappings/fediverse-bridge-status', authenticateToken, async (req:
     return;
   }
 
+  const actorByMappingId = new Map<string, string>();
+  const actorsToCheck: string[] = [];
   const statuses: Record<string, FediverseBridgeStatusView> = {};
-  for (const chunk of chunkArray(idsToCheck, FEDIVERSE_BRIDGE_STATUS_CHUNK_SIZE)) {
-    const chunkResults = await Promise.all(
-      chunk.map(async (id) => {
-        const mapping = visibleMappingsById.get(id);
-        if (!mapping) {
-          return {
-            id,
-            status: {
-              bridged: false,
-              checkedAt: new Date().toISOString(),
-              error: 'Mapping not visible to current user.',
-            } satisfies FediverseBridgeStatusView,
-          };
-        }
 
-        try {
-          const result = await getFediverseBridgeStatus({
-            bskyIdentifier: mapping.bskyIdentifier,
-            bskyPassword: mapping.bskyPassword,
-            bskyServiceUrl: mapping.bskyServiceUrl,
-          });
-
-          return {
-            id,
-            status: {
-              bridged: result.bridged,
-              checkedAt: new Date().toISOString(),
-            } satisfies FediverseBridgeStatusView,
-          };
-        } catch (error) {
-          return {
-            id,
-            status: {
-              bridged: false,
-              checkedAt: new Date().toISOString(),
-              error: getErrorMessage(error, 'Failed to check fediverse bridge status.'),
-            } satisfies FediverseBridgeStatusView,
-          };
-        }
-      }),
-    );
-
-    for (const result of chunkResults) {
-      statuses[result.id] = result.status;
+  for (const id of idsToCheck) {
+    const mapping = visibleMappingsById.get(id);
+    if (!mapping) {
+      statuses[id] = {
+        bridged: false,
+        checkedAt: new Date().toISOString(),
+        error: 'Mapping not visible to current user.',
+      };
+      continue;
     }
+
+    const actor = normalizeActor(mapping.bskyIdentifier);
+    if (!actor) {
+      statuses[id] = {
+        bridged: false,
+        checkedAt: new Date().toISOString(),
+        error: 'Missing Bluesky identifier for mapping.',
+      };
+      continue;
+    }
+
+    actorByMappingId.set(id, actor);
+    actorsToCheck.push(actor);
+  }
+
+  const actorStatuses = await fetchFediverseBridgeStatusesByActor(actorsToCheck);
+
+  for (const [mappingId, actor] of actorByMappingId.entries()) {
+    const actorStatus = actorStatuses[actor];
+    if (actorStatus) {
+      statuses[mappingId] = actorStatus;
+      continue;
+    }
+
+    statuses[mappingId] = {
+      bridged: false,
+      checkedAt: new Date().toISOString(),
+      error: 'Bridge status could not be determined for this account.',
+    };
   }
 
   res.json(statuses);

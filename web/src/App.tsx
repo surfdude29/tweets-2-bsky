@@ -782,6 +782,11 @@ function App() {
   const [isSyncAllProfilesBusy, setIsSyncAllProfilesBusy] = useState(false);
   const [bridgingMappingId, setBridgingMappingId] = useState<string | null>(null);
   const [isBridgeAllBusy, setIsBridgeAllBusy] = useState(false);
+  const [bridgeAllProgress, setBridgeAllProgress] = useState<{
+    currentHandle: string;
+    completed: number;
+    total: number;
+  } | null>(null);
   const [fediverseBridgeStatusByMappingId, setFediverseBridgeStatusByMappingId] = useState<
     Record<string, FediverseBridgeStatusView>
   >({});
@@ -934,6 +939,7 @@ function App() {
     setIsSyncAllProfilesBusy(false);
     setBridgingMappingId(null);
     setIsBridgeAllBusy(false);
+    setBridgeAllProgress(null);
     setFediverseBridgeStatusByMappingId({});
     setEditTwitterUsers([]);
     setNewGroupName('');
@@ -1600,7 +1606,11 @@ function App() {
             (canManageOwnMappings && (!mapping.createdByUserId || mapping.createdByUserId === me?.id)),
         )
         .filter((mapping) => {
-          if (fediverseBridgeStatusByMappingId[mapping.id]?.bridged === true) {
+          const bridgeStatus = fediverseBridgeStatusByMappingId[mapping.id];
+          if (!bridgeStatus || bridgeStatus.error) {
+            return false;
+          }
+          if (bridgeStatus.bridged === true) {
             return false;
           }
           const profile = profilesByActor[normalizeTwitterUsername(mapping.bskyIdentifier)];
@@ -2557,8 +2567,16 @@ function App() {
     };
 
     const alreadyBridged = manageable.filter((mapping) => statusLookup[mapping.id]?.bridged === true);
+    const unknownStatusMappings = manageable.filter((mapping) => {
+      const status = statusLookup[mapping.id];
+      return !status || Boolean(status.error);
+    });
     const eligible = manageable.filter((mapping) => {
-      if (statusLookup[mapping.id]?.bridged === true) {
+      const status = statusLookup[mapping.id];
+      if (!status || status.error) {
+        return false;
+      }
+      if (status.bridged === true) {
         return false;
       }
       const profile = profileLookup[normalizeTwitterUsername(mapping.bskyIdentifier)];
@@ -2570,7 +2588,9 @@ function App() {
         'info',
         alreadyBridged.length > 0
           ? 'No new accounts to bridge. Eligible accounts are already bridged.'
-          : 'No eligible unbridged accounts found (accounts must be at least 7 days old).',
+          : unknownStatusMappings.length > 0
+            ? `Could not verify bridge status for ${unknownStatusMappings.length} account(s). Try again in a few seconds.`
+            : 'No eligible unbridged accounts found (accounts must be at least 7 days old).',
       );
       return;
     }
@@ -2583,11 +2603,23 @@ function App() {
     }
 
     setIsBridgeAllBusy(true);
+    setBridgeAllProgress({
+      currentHandle: '',
+      completed: 0,
+      total: eligible.length,
+    });
     const newlyBridgedLabels: string[] = [];
     let failedCount = 0;
 
     try {
-      for (const mapping of eligible) {
+      for (let index = 0; index < eligible.length; index += 1) {
+        const mapping = eligible[index];
+        setBridgeAllProgress({
+          currentHandle: `@${mapping.bskyIdentifier}`,
+          completed: index,
+          total: eligible.length,
+        });
+
         const outcome = await bridgeMappingToFediverse(mapping, {
           confirm: false,
           showNoticeOnResult: false,
@@ -2597,6 +2629,12 @@ function App() {
         } else {
           failedCount += 1;
         }
+
+        setBridgeAllProgress({
+          currentHandle: `@${mapping.bskyIdentifier}`,
+          completed: index + 1,
+          total: eligible.length,
+        });
       }
 
       if (newlyBridgedLabels.length > 0) {
@@ -2612,10 +2650,11 @@ function App() {
 
       showNotice(
         failedCount > 0 ? 'info' : 'success',
-        `${summary} Already bridged: ${alreadyBridged.length}. Failed: ${failedCount}.`,
+        `${summary} Already bridged: ${alreadyBridged.length}. Unknown status: ${unknownStatusMappings.length}. Failed: ${failedCount}.`,
       );
     } finally {
       setIsBridgeAllBusy(false);
+      setBridgeAllProgress(null);
     }
   };
 
@@ -3874,8 +3913,17 @@ function App() {
                     ) : (
                       <Link2 className="mr-2 h-4 w-4" />
                     )}
-                    Bridge all
+                    {isBridgeAllBusy && bridgeAllProgress
+                      ? `Bridging ${bridgeAllProgress.completed}/${bridgeAllProgress.total}`
+                      : 'Bridge all'}
                   </Button>
+                  {isBridgeAllBusy && bridgeAllProgress ? (
+                    <Badge variant="outline" className="max-w-[280px] truncate">
+                      {bridgeAllProgress.currentHandle
+                        ? `Now bridging ${bridgeAllProgress.currentHandle}`
+                        : 'Preparing bridge-all...'}
+                    </Badge>
+                  ) : null}
                   <Badge variant="outline">{accountMappingsForView.length} configured</Badge>
                 </div>
               </div>
