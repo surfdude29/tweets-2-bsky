@@ -235,10 +235,11 @@ function saveProcessedTweet(
 // Custom Twitter Client
 // ============================================================================
 
-let scraper: Scraper | null = null;
-let currentTwitterCookies = { authToken: '', ct0: '' };
+const scraperSessions = new Map<string, Scraper>();
+const sessionCookies = new Map<string, { authToken: string; ct0: string }>();
 let useBackupCredentials = false;
 const lastCreatedAtByBsky = new Map<string, number>();
+const SUBBRANCH_COUNT = 5;
 
 function getUniqueCreatedAtIso(bskyIdentifier: string, desiredMs: number): string {
   const key = bskyIdentifier.toLowerCase();
@@ -248,7 +249,7 @@ function getUniqueCreatedAtIso(bskyIdentifier: string, desiredMs: number): strin
   return new Date(nextMs).toISOString();
 }
 
-async function getTwitterScraper(forceReset = false): Promise<Scraper | null> {
+async function getTwitterScraper(sessionKey = 'default', forceReset = false): Promise<Scraper | null> {
   const config = getConfig();
   let authToken = config.twitter.authToken;
   let ct0 = config.twitter.ct0;
@@ -262,17 +263,24 @@ async function getTwitterScraper(forceReset = false): Promise<Scraper | null> {
   if (!authToken || !ct0) return null;
 
   // Re-initialize if config changed, not yet initialized, or forced reset
-  if (!scraper || forceReset || currentTwitterCookies.authToken !== authToken || currentTwitterCookies.ct0 !== ct0) {
+  const existingScraper = scraperSessions.get(sessionKey);
+  const existingCookies = sessionCookies.get(sessionKey);
+  if (
+    !existingScraper ||
+    forceReset ||
+    existingCookies?.authToken !== authToken ||
+    existingCookies?.ct0 !== ct0
+  ) {
     console.log(`🔄 Initializing Twitter scraper with ${useBackupCredentials ? 'BACKUP' : 'PRIMARY'} credentials...`);
-    scraper = new Scraper();
+    const scraper = new Scraper();
     await scraper.setCookies([`auth_token=${authToken}`, `ct0=${ct0}`]);
-
-    currentTwitterCookies = {
+    scraperSessions.set(sessionKey, scraper);
+    sessionCookies.set(sessionKey, {
       authToken: authToken,
       ct0: ct0,
-    };
+    });
   }
-  return scraper;
+  return scraperSessions.get(sessionKey) ?? null;
 }
 
 async function switchCredentials() {
@@ -280,7 +288,8 @@ async function switchCredentials() {
   if (config.twitter.backupAuthToken && config.twitter.backupCt0) {
     useBackupCredentials = !useBackupCredentials;
     console.log(`⚠️ Switching to ${useBackupCredentials ? 'BACKUP' : 'PRIMARY'} Twitter credentials...`);
-    await getTwitterScraper(true);
+    scraperSessions.clear();
+    sessionCookies.clear();
     return true;
   }
   console.log('⚠️ No backup credentials available to switch to.');
@@ -1190,44 +1199,15 @@ function addTwitterHandleLinkFacets(text: string, facets?: any[]): any[] | undef
   return [...existingFacets, ...newFacets].sort((a, b) => a.index.byteStart - b.index.byteStart);
 }
 
-// Simple p-limit implementation for concurrency control
-const pLimit = (concurrency: number) => {
-  const queue: (() => Promise<void>)[] = [];
-  let activeCount = 0;
-
-  const next = () => {
-    activeCount--;
-    if (queue.length > 0) {
-      queue.shift()!();
-    }
-  };
-
-  return <T>(fn: () => Promise<T>): Promise<T> => {
-    return new Promise<T>((resolve, reject) => {
-      const run = async () => {
-        activeCount++;
-        try {
-          resolve(await fn());
-        } catch (e) {
-          reject(e);
-        } finally {
-          next();
-        }
-      };
-
-      if (activeCount < concurrency) {
-        run();
-      } else {
-        queue.push(run);
-      }
-    });
-  };
-};
-
 // Replaced safeSearch with fetchUserTweets to use UserTweets endpoint instead of Search
 // Added processedIds for early stopping optimization
-async function fetchUserTweets(username: string, limit: number, processedIds?: Set<string>): Promise<Tweet[]> {
-  const client = await getTwitterScraper();
+async function fetchUserTweets(
+  username: string,
+  limit: number,
+  processedIds?: Set<string>,
+  sessionKey = 'default',
+): Promise<Tweet[]> {
+  const client = await getTwitterScraper(sessionKey);
   if (!client) return [];
 
   let retries = 3;
@@ -1316,6 +1296,7 @@ async function processTweets(
   dryRun = false,
   sharedProcessedMap?: ProcessedTweetsMap,
   sharedTweetMap?: Map<string, Tweet>,
+  sessionKey = 'default',
 ): Promise<void> {
   // Filter tweets to ensure they're actually from this user
   const filteredTweets = tweets.filter((t) => {
@@ -1413,7 +1394,7 @@ async function processTweets(
 
         let parentBackfilled = false;
         try {
-          const scraper = await getTwitterScraper();
+          const scraper = await getTwitterScraper(sessionKey);
           if (scraper) {
             const parentRaw = await scraper.getTweet(replyStatusId);
             if (parentRaw) {
@@ -1432,6 +1413,7 @@ async function processTweets(
                   dryRun,
                   localProcessedMap,
                   tweetMap,
+                  sessionKey,
                 );
 
                 // Check if it was saved
@@ -1946,6 +1928,7 @@ async function importHistory(
   dryRun = false,
   ignoreCancellation = false,
   requestId?: string,
+  sessionKey = 'default',
 ): Promise<void> {
   const config = getConfig();
   const mapping = config.mappings.find((m) =>
@@ -1983,7 +1966,7 @@ async function importHistory(
   console.log(`Fetching tweets for ${twitterUsername}...`);
   updateAppStatus({ message: `Fetching tweets...` });
 
-  const client = await getTwitterScraper();
+  const client = await getTwitterScraper(sessionKey);
   if (client) {
     try {
       // Use getTweets which reliably fetches user timeline
@@ -2021,7 +2004,7 @@ async function importHistory(
 
   console.log(`Fetch complete. Found ${allFoundTweets.length} new tweets to import.`);
   if (allFoundTweets.length > 0) {
-    await processTweets(agent as BskyAgent, twitterUsername, bskyIdentifier, allFoundTweets, dryRun);
+    await processTweets(agent as BskyAgent, twitterUsername, bskyIdentifier, allFoundTweets, dryRun, undefined, undefined, sessionKey);
     console.log('History import complete.');
   }
 }
@@ -2198,7 +2181,12 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMes
   }
 }
 
-async function runAccountTask(mapping: AccountMapping, backfillRequest?: PendingBackfill, dryRun = false) {
+async function runAccountTask(
+  mapping: AccountMapping,
+  backfillRequest?: PendingBackfill,
+  dryRun = false,
+  sessionKey = 'default',
+) {
   const logPrefix = getMappingLogPrefix(mapping);
   const existingTask = activeTasks.get(mapping.id);
   if (existingTask) {
@@ -2297,7 +2285,7 @@ async function runAccountTask(mapping: AccountMapping, backfillRequest?: Pending
               backfillRequestId: backfillReq.requestId,
             });
             await withTimeout(
-              importHistory(twitterUsername, mapping.bskyIdentifier, limit, dryRun, false, backfillReq.requestId),
+              importHistory(twitterUsername, mapping.bskyIdentifier, limit, dryRun, false, backfillReq.requestId, sessionKey),
               backfillAccountTimeoutMs,
               `[${twitterUsername}] Backfill timed out after ${Math.round(backfillAccountTimeoutMs / 1000)}s`,
             );
@@ -2350,7 +2338,7 @@ async function runAccountTask(mapping: AccountMapping, backfillRequest?: Pending
             // Use fetchUserTweets with early stopping optimization
             // Increase limit slightly since we have early stopping now
             const tweets = await withTimeout(
-              fetchUserTweets(twitterUsername, 50, processedIds),
+              fetchUserTweets(twitterUsername, 50, processedIds, sessionKey),
               scheduledAccountTimeoutMs,
               `[${twitterUsername}] Scheduled fetch timed out after ${Math.round(scheduledAccountTimeoutMs / 1000)}s`,
             );
@@ -2362,7 +2350,7 @@ async function runAccountTask(mapping: AccountMapping, backfillRequest?: Pending
 
             console.log(`[${twitterUsername}] 📥 Fetched ${tweets.length} tweets.`);
             await withTimeout(
-              processTweets(agent, twitterUsername, mapping.bskyIdentifier, tweets, dryRun),
+              processTweets(agent, twitterUsername, mapping.bskyIdentifier, tweets, dryRun, undefined, undefined, sessionKey),
               scheduledAccountTimeoutMs,
               `[${twitterUsername}] Scheduled processing timed out after ${Math.round(scheduledAccountTimeoutMs / 1000)}s`,
             );
@@ -2466,9 +2454,42 @@ async function main(): Promise<void> {
     );
   };
 
+  const createSubbranches = <T,>(items: T[], branchCount = SUBBRANCH_COUNT): T[][] => {
+    const branches = Array.from({ length: Math.max(1, branchCount) }, () => [] as T[]);
+    for (let index = 0; index < items.length; index += 1) {
+      branches[index % branches.length]?.push(items[index] as T);
+    }
+    return branches;
+  };
+
+  const runMappingsWithSubbranches = async (
+    mappings: AccountMapping[],
+    dryRun: boolean,
+    modeLabel: 'scheduled' | 'run-once',
+  ) => {
+    const enabledMappings = mappings.filter((mapping) => mapping.enabled);
+    if (enabledMappings.length === 0) {
+      const logPrefix = modeLabel === 'run-once' ? '[CLI]' : '[Scheduler]';
+      console.log(`${logPrefix} ℹ️ No enabled mappings found for ${modeLabel} cycle.`);
+      return;
+    }
+
+    const branches = createSubbranches(enabledMappings);
+    const tasks = branches.map(async (branchMappings, branchIndex) => {
+      const sessionKey = `subbranch-${branchIndex + 1}`;
+      if (branchMappings.length === 0) return;
+      console.log(
+        `[${modeLabel}] 🌿 Subbranch ${branchIndex + 1}/${branches.length} processing ${branchMappings.length} mapping(s).`,
+      );
+      for (const mapping of branchMappings) {
+        await runAccountTask(mapping, undefined, dryRun, sessionKey);
+      }
+    });
+
+    await Promise.all(tasks);
+  };
+
   const runSingleCycle = async (cycleConfig: ReturnType<typeof getConfig>) => {
-    const runLimit = pLimit(3);
-    const tasks: Promise<void>[] = [];
 
     if (options.backfillMapping) {
       const mapping = findMappingByRef(cycleConfig.mappings, options.backfillMapping);
@@ -2491,27 +2512,12 @@ async function main(): Promise<void> {
       };
 
       console.log(`[CLI] 🚧 Running backfill for ${mapping.bskyIdentifier}...`);
-      await runAccountTask(mapping, backfillRequest, options.dryRun);
+      await runAccountTask(mapping, backfillRequest, options.dryRun, 'subbranch-1');
       updateAppStatus({ state: 'idle', message: `Backfill complete for ${mapping.bskyIdentifier}` });
       return;
     }
 
-    for (const mapping of cycleConfig.mappings) {
-      if (!mapping.enabled) continue;
-      tasks.push(
-        runLimit(async () => {
-          await runAccountTask(mapping, undefined, options.dryRun);
-        }),
-      );
-    }
-
-    if (tasks.length === 0) {
-      console.log('[CLI] No enabled mappings found.');
-      updateAppStatus({ state: 'idle', message: 'No enabled mappings found' });
-      return;
-    }
-
-    await Promise.all(tasks);
+    await runMappingsWithSubbranches(cycleConfig.mappings, options.dryRun, 'run-once');
     updateAppStatus({ state: 'idle', message: options.dryRun ? 'Dry run cycle complete' : 'Run-once cycle complete' });
   };
 
@@ -2524,8 +2530,6 @@ async function main(): Promise<void> {
   console.log(`Scheduler started. Base interval: ${config.checkIntervalMinutes} minutes.`);
   updateLastCheckTime(); // Initialize next time
 
-  // Concurrency limit for processing accounts
-  const runLimit = pLimit(3);
   let deferredScheduledRun = false;
   let lastWakeSignal = getSchedulerWakeSignal();
 
@@ -2581,19 +2585,28 @@ async function main(): Promise<void> {
         message: `Backfill queue priority: ${pendingBackfills.length} job(s), ~${estimatedPendingTweets} tweets pending`,
       });
 
-      const [nextBackfill] = pendingBackfills;
-      if (nextBackfill) {
-        const mapping = findMappingById(config.mappings, nextBackfill.id);
-        if (mapping && mapping.enabled) {
-          const limit = nextBackfill.limit || 15;
-          console.log(
-            `[Scheduler] 🚧 Backfill priority 1/${pendingBackfills.length}: ${mapping.bskyIdentifier} (limit ${limit})`,
-          );
-          await runAccountTask(mapping, nextBackfill, options.dryRun);
-        } else {
-          clearBackfill(nextBackfill.id, nextBackfill.requestId);
-        }
+      const selectedBackfills: PendingBackfill[] = [];
+      const mappingIds = new Set<string>();
+      for (const backfill of pendingBackfills) {
+        if (mappingIds.has(backfill.id)) continue;
+        mappingIds.add(backfill.id);
+        selectedBackfills.push(backfill);
+        if (selectedBackfills.length >= SUBBRANCH_COUNT) break;
       }
+
+      const backfillTasks = selectedBackfills.map(async (backfill, branchIndex) => {
+        const mapping = findMappingById(config.mappings, backfill.id);
+        if (mapping && mapping.enabled) {
+          const limit = backfill.limit || 15;
+          console.log(
+            `[Scheduler] 🚧 Backfill subbranch ${branchIndex + 1}/${SUBBRANCH_COUNT}: ${mapping.bskyIdentifier} (limit ${limit})`,
+          );
+          await runAccountTask(mapping, backfill, options.dryRun, `subbranch-${branchIndex + 1}`);
+        } else {
+          clearBackfill(backfill.id, backfill.requestId);
+        }
+      });
+      await Promise.all(backfillTasks);
 
       const remainingBackfills = getPendingBackfills();
       if (remainingBackfills.length === 0) {
@@ -2616,23 +2629,8 @@ async function main(): Promise<void> {
       deferredScheduledRun = false;
       updateLastCheckTime();
 
-      const tasks: Promise<void>[] = [];
-      for (const mapping of config.mappings) {
-        if (!mapping.enabled) continue;
-
-        tasks.push(
-          runLimit(async () => {
-            await runAccountTask(mapping, undefined, options.dryRun);
-          }),
-        );
-      }
-
-      if (tasks.length > 0) {
-        await Promise.all(tasks);
-        console.log(`[Scheduler] ✅ All tasks for this cycle complete.`);
-      } else {
-        console.log('[Scheduler] ℹ️ No enabled mappings found for scheduled cycle.');
-      }
+      await runMappingsWithSubbranches(config.mappings, options.dryRun, 'scheduled');
+      console.log(`[Scheduler] ✅ All subbranches for this cycle complete.`);
 
       updateAppStatus({ state: 'idle', message: 'Scheduled checks complete' });
     }
