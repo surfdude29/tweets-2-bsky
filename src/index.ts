@@ -2029,6 +2029,7 @@ async function importHistory(
 // Task management
 const activeTasks = new Map<string, Promise<void>>();
 const DEFAULT_BACKFILL_ACCOUNT_TIMEOUT_MS = 2 * 60 * 1000;
+const DEFAULT_SCHEDULED_ACCOUNT_TIMEOUT_MS = 8 * 60 * 1000;
 const PROFILE_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000;
 let profileSyncStateWriteQueue: Promise<void> = Promise.resolve();
 
@@ -2058,6 +2059,14 @@ const resolveBackfillAccountTimeoutMs = (): number => {
     return raw;
   }
   return DEFAULT_BACKFILL_ACCOUNT_TIMEOUT_MS;
+};
+
+const resolveScheduledAccountTimeoutMs = (): number => {
+  const raw = Number(process.env.SCHEDULED_ACCOUNT_TIMEOUT_MS);
+  if (Number.isFinite(raw) && raw >= 30_000) {
+    return raw;
+  }
+  return DEFAULT_SCHEDULED_ACCOUNT_TIMEOUT_MS;
 };
 
 const normalizeMappingHandle = (value: string): string => value.trim().replace(/^@/, '').toLowerCase();
@@ -2320,6 +2329,7 @@ async function runAccountTask(mapping: AccountMapping, backfillRequest?: Pending
         console.log(`${logPrefix} Backfill complete.`);
       } else {
         updateAppStatus({ backfillMappingId: undefined, backfillRequestId: undefined });
+        const scheduledAccountTimeoutMs = resolveScheduledAccountTimeoutMs();
 
         // Pre-load processed IDs for optimization
         const processedMap = loadProcessedTweets(mapping.bskyIdentifier);
@@ -2339,7 +2349,11 @@ async function runAccountTask(mapping: AccountMapping, backfillRequest?: Pending
 
             // Use fetchUserTweets with early stopping optimization
             // Increase limit slightly since we have early stopping now
-            const tweets = await fetchUserTweets(twitterUsername, 50, processedIds);
+            const tweets = await withTimeout(
+              fetchUserTweets(twitterUsername, 50, processedIds),
+              scheduledAccountTimeoutMs,
+              `[${twitterUsername}] Scheduled fetch timed out after ${Math.round(scheduledAccountTimeoutMs / 1000)}s`,
+            );
 
             if (!tweets || tweets.length === 0) {
               console.log(`[${twitterUsername}] ℹ️ No tweets found (or fetch failed).`);
@@ -2347,7 +2361,11 @@ async function runAccountTask(mapping: AccountMapping, backfillRequest?: Pending
             }
 
             console.log(`[${twitterUsername}] 📥 Fetched ${tweets.length} tweets.`);
-            await processTweets(agent, twitterUsername, mapping.bskyIdentifier, tweets, dryRun);
+            await withTimeout(
+              processTweets(agent, twitterUsername, mapping.bskyIdentifier, tweets, dryRun),
+              scheduledAccountTimeoutMs,
+              `[${twitterUsername}] Scheduled processing timed out after ${Math.round(scheduledAccountTimeoutMs / 1000)}s`,
+            );
           } catch (err) {
             sourceErrors += 1;
             console.error(`${logPrefix} ❌ Error checking @${twitterUsername}: ${describeError(err)}`);

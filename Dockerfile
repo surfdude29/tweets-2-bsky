@@ -31,6 +31,7 @@ WORKDIR /app
 ENV NODE_ENV=production \
   HOST=0.0.0.0 \
   PORT=3000 \
+  SCHEDULED_ACCOUNT_TIMEOUT_MS=480000 \
   CHROME_BIN=/usr/bin/chromium \
   PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 

@@ -85,6 +85,31 @@ When using Bun scripts, pass CLI args after `--`:
 bun run cli -- status
 ```
 
+### Scheduler appears stuck on one account
+If a single source account hangs for a long time (media fetch/processing), scheduled checks now skip that account after a timeout and continue with the next one.
+
+- Default timeout: `480000` ms (8 minutes)
+- Override with env var: `SCHEDULED_ACCOUNT_TIMEOUT_MS`
+
+Examples:
+
+```bash
+# Docker
+docker run -d --name tweets-2-bsky -e SCHEDULED_ACCOUNT_TIMEOUT_MS=300000 -p 3000:3000 -v tweets2bsky_data:/app/data j4ckxyz/tweets-2-bsky:latest
+
+# Source install (.env)
+echo 'SCHEDULED_ACCOUNT_TIMEOUT_MS=300000' >> .env
+./update.sh
+```
+
+To watch logs while debugging on Raspberry Pi:
+
+```bash
+docker logs -f tweets-2-bsky
+# or for source/PM2
+pm2 logs tweets-2-bsky
+```
+
 ### Docker: permissions writing `/app/data`
 If the container fails to write `config.json` or `database.sqlite`, ensure `/app/data` is writable by the container process.
 

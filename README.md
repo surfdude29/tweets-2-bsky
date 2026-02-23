@@ -176,6 +176,7 @@ Common variables:
 - `JWT_EXPIRES_IN`
 - `CORS_ALLOWED_ORIGINS`
 - `BSKY_APPVIEW_URL` (optional override)
+- `SCHEDULED_ACCOUNT_TIMEOUT_MS` (default `480000` / 8 minutes, forces a skip when one source account hangs during scheduled checks)
 
 ### 4) Persistent data inside Docker
 
@@ -213,7 +214,25 @@ docker run -d \
   j4ckxyz/tweets-2-bsky:latest
 ```
 
-### 7) Platform support
+### 7) Debug logs (especially useful on Raspberry Pi)
+
+If runs appear stuck, stream logs live:
+
+```bash
+docker logs -f tweets-2-bsky
+```
+
+For source installs, use whichever runtime you started with:
+
+```bash
+pm2 logs tweets-2-bsky
+# or
+tail -f data/runtime/nohup.out
+```
+
+If an account hangs during a scheduled cycle, the scheduler now times out that account and moves on automatically. You can tune this with `SCHEDULED_ACCOUNT_TIMEOUT_MS`.
+
+### 8) Platform support
 
 The Docker build is designed for multi-platform images:
 
