@@ -14,6 +14,7 @@ const BSKY_PUBLIC_APPVIEW_URL = (process.env.BSKY_PUBLIC_APPVIEW_URL || 'https:/
   '',
 );
 const MIRROR_SUFFIX = '{bot}';
+const LEGACY_MIRROR_SUFFIX = '{unofficial}';
 const FEDIVERSE_BRIDGE_HANDLE = 'ap.brid.gy';
 const MIN_BRIDGE_ACCOUNT_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const BOT_SELF_LABEL_VALUE = 'bot';
@@ -226,6 +227,15 @@ const truncateGraphemes = (value: string, limit: number): string => {
 };
 
 const normalizeWhitespace = (value: string): string => value.replace(/\s+/g, ' ').trim();
+
+const stripMirrorDisplaySuffixes = (value: string): string => {
+  if (!value) {
+    return value;
+  }
+
+  const suffixPattern = /\s*\{(?:bot|unofficial)\}\s*/gi;
+  return normalizeWhitespace(value.replace(suffixPattern, ' '));
+};
 
 const shouldStripTrackingParam = (rawName: string): boolean => {
   const name = rawName.trim().toLowerCase();
@@ -472,7 +482,8 @@ const fetchTwitterProfileWithCookies = async (
 };
 
 export const buildMirroredDisplayName = (name: string | undefined, username: string): string => {
-  const baseName = normalizeWhitespace(name || '') || `@${normalizeTwitterUsername(username)}`;
+  const cleanedName = stripMirrorDisplaySuffixes(normalizeWhitespace(name || ''));
+  const baseName = cleanedName || `@${normalizeTwitterUsername(username)}`;
   const lowerSuffix = MIRROR_SUFFIX.toLowerCase();
   const merged = baseName.toLowerCase().endsWith(lowerSuffix) ? baseName : `${baseName} ${MIRROR_SUFFIX}`;
   return truncateGraphemes(merged, 64);
@@ -650,6 +661,7 @@ export const ensureBlueskyDisplayNameBotSuffix = async (args: {
   bskyIdentifier: string;
   bskyPassword: string;
   bskyServiceUrl?: string;
+  twitterUsername?: string;
 }): Promise<EnsureDisplayNameBotSuffixResult> => {
   const { agent, credentials } = await loginBlueskyAgent(args);
   const repo = agent.session?.did || credentials.did;
@@ -679,9 +691,20 @@ export const ensureBlueskyDisplayNameBotSuffix = async (args: {
   }
 
   const currentDisplayName = normalizeOptionalString(existingProfileRecord.displayName);
-  const nextDisplayName = buildMirroredDisplayName(currentDisplayName, credentials.handle);
+  const normalizedTwitterUsername = normalizeTwitterUsername(args.twitterUsername || '');
+  let sourceDisplayName = currentDisplayName;
+  let sourceUsername = credentials.handle;
+
+  if (normalizedTwitterUsername) {
+    const twitterProfile = await fetchTwitterMirrorProfile(normalizedTwitterUsername);
+    sourceDisplayName = normalizeOptionalString(twitterProfile.name);
+    sourceUsername = twitterProfile.username;
+  }
+
+  const nextDisplayName = buildMirroredDisplayName(sourceDisplayName, sourceUsername);
   const currentNormalized = normalizeWhitespace(currentDisplayName || '');
-  const updated = currentNormalized !== nextDisplayName;
+  const legacySuffixPresent = currentNormalized.toLowerCase().includes(LEGACY_MIRROR_SUFFIX);
+  const updated = currentNormalized !== nextDisplayName || legacySuffixPresent;
 
   if (updated) {
     const nextProfileRecord: Record<string, unknown> = {

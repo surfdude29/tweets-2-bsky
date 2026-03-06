@@ -416,6 +416,7 @@ const ADD_ACCOUNT_STEPS = ['Sources', 'Create', 'Bluesky', 'Verify & Create'] as
 const ADD_ACCOUNT_STEP_COUNT = ADD_ACCOUNT_STEPS.length;
 const ACCOUNT_SEARCH_MIN_SCORE = 22;
 const ACCOUNT_ROWS_BATCH_SIZE = 40;
+const ACCOUNT_PAGE_SIZE_DEFAULT = 50;
 const DEFAULT_BACKFILL_LIMIT = 15;
 const FEDIVERSE_BRIDGE_MIN_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_USER_PERMISSIONS: UserPermissions = {
@@ -852,6 +853,8 @@ function App() {
   });
   const [accountsViewMode, setAccountsViewMode] = useState<'grouped' | 'global'>('grouped');
   const [accountsSearchQuery, setAccountsSearchQuery] = useState('');
+  const [accountsPage, setAccountsPage] = useState(1);
+  const [accountsPageSize, setAccountsPageSize] = useState(ACCOUNT_PAGE_SIZE_DEFAULT);
   const [accountsBulkAction, setAccountsBulkAction] = useState<BulkAccountsAction>('sync_profiles');
   const [accountsBulkScope, setAccountsBulkScope] = useState<'all' | 'selected'>('all');
   const [selectedAccountMappingIds, setSelectedAccountMappingIds] = useState<string[]>([]);
@@ -1788,9 +1791,41 @@ function App() {
     () => filteredGroupedMappings.reduce((total, group) => total + group.mappings.length, 0),
     [filteredGroupedMappings],
   );
+  const paginatedMappings = useMemo(() => filteredGroupedMappings.flatMap((group) => group.mappings), [filteredGroupedMappings]);
+  const accountsPageCount = useMemo(
+    () => Math.max(1, Math.ceil(paginatedMappings.length / Math.max(1, accountsPageSize))),
+    [accountsPageSize, paginatedMappings.length],
+  );
+  useEffect(() => {
+    setAccountsPage(1);
+  }, [accountsPageSize, accountsSearchQuery, accountsViewMode, accountsCreatorFilter]);
+  useEffect(() => {
+    if (accountsPage > accountsPageCount) {
+      setAccountsPage(accountsPageCount);
+    }
+  }, [accountsPage, accountsPageCount]);
+  const pagedMappingIdSet = useMemo(() => {
+    const safePageSize = Math.max(1, accountsPageSize);
+    const start = Math.max(0, (accountsPage - 1) * safePageSize);
+    const end = start + safePageSize;
+    return new Set(paginatedMappings.slice(start, end).map((mapping) => mapping.id));
+  }, [accountsPage, accountsPageSize, paginatedMappings]);
+  const pagedGroupedMappings = useMemo(
+    () =>
+      filteredGroupedMappings
+        .map((group) => ({
+          ...group,
+          mappings: group.mappings.filter((mapping) => pagedMappingIdSet.has(mapping.id)),
+        }))
+        .filter((group) => group.mappings.length > 0),
+    [filteredGroupedMappings, pagedMappingIdSet],
+  );
+  const currentAccountsPageStart = accountMatchesCount === 0 ? 0 : (accountsPage - 1) * Math.max(1, accountsPageSize) + 1;
+  const currentAccountsPageEnd =
+    accountMatchesCount === 0 ? 0 : Math.min(accountMatchesCount, accountsPage * Math.max(1, accountsPageSize));
   useEffect(() => {
     setVisibleRowsByGroupKey((previous) => {
-      const validGroupKeys = new Set(filteredGroupedMappings.map((group) => group.key));
+      const validGroupKeys = new Set(pagedGroupedMappings.map((group) => group.key));
       const next: Record<string, number> = {};
 
       for (const [groupKey, count] of Object.entries(previous)) {
@@ -1799,7 +1834,7 @@ function App() {
         }
       }
 
-      for (const group of filteredGroupedMappings) {
+      for (const group of pagedGroupedMappings) {
         const defaultVisible = Math.min(group.mappings.length, ACCOUNT_ROWS_BATCH_SIZE);
         const existing = next[group.key] || 0;
         next[group.key] = Math.max(existing, defaultVisible);
@@ -1807,7 +1842,7 @@ function App() {
 
       return next;
     });
-  }, [filteredGroupedMappings]);
+  }, [pagedGroupedMappings]);
   const groupKeysForCollapse = useMemo(() => groupedMappings.map((group) => group.key), [groupedMappings]);
   const allGroupsCollapsed = useMemo(
     () =>
@@ -1882,7 +1917,7 @@ function App() {
   const selectedManageableMappingsCount = selectedManageableMappingsForView.length;
   const filteredManageableMappingIds = useMemo(() => {
     const seen = new Set<string>();
-    for (const group of filteredGroupedMappings) {
+    for (const group of pagedGroupedMappings) {
       for (const mapping of group.mappings) {
         if (seen.has(mapping.id) || !canManageMapping(mapping)) {
           continue;
@@ -1891,7 +1926,7 @@ function App() {
       }
     }
     return [...seen];
-  }, [canManageMapping, filteredGroupedMappings]);
+  }, [canManageMapping, pagedGroupedMappings]);
   const allFilteredManageableSelected =
     filteredManageableMappingIds.length > 0 &&
     filteredManageableMappingIds.every((mappingId) => selectedAccountMappingIdSet.has(mappingId));
@@ -2718,7 +2753,7 @@ function App() {
     }
 
     const confirmed = window.confirm(
-      `Append {bot} to display names for ${candidates.length} account(s)? This only appends when missing.`,
+      `Refresh display names from Twitter and append {bot} for ${candidates.length} account(s)? Legacy {UNOFFICIAL} will be removed.`,
     );
     if (!confirmed) {
       return;
@@ -4444,8 +4479,8 @@ function App() {
                     onClick={() => toggleSelectAllFilteredManageable(!allFilteredManageableSelected)}
                   >
                     {allFilteredManageableSelected
-                      ? `Unselect matched (${filteredManageableMappingIds.length})`
-                      : `Select matched (${filteredManageableMappingIds.length})`}
+                      ? `Unselect page (${filteredManageableMappingIds.length})`
+                      : `Select page (${filteredManageableMappingIds.length})`}
                   </Button>
                   <Button
                     size="sm"
@@ -4518,7 +4553,46 @@ function App() {
                 )}
               </div>
 
-              {filteredGroupedMappings.length === 0 ? (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border/70 bg-muted/20 px-3 py-2">
+                <p className="text-xs text-muted-foreground">
+                  Showing {currentAccountsPageStart}-{currentAccountsPageEnd} of {accountMatchesCount} account
+                  {accountMatchesCount === 1 ? '' : 's'}
+                </p>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-muted-foreground">Per page</span>
+                  <select
+                    className={cn(selectClassName, 'h-8 w-24 px-2 py-1 text-xs')}
+                    value={accountsPageSize}
+                    onChange={(event) => setAccountsPageSize(Number(event.target.value) || ACCOUNT_PAGE_SIZE_DEFAULT)}
+                  >
+                    <option value={25}>25</option>
+                    <option value={50}>50</option>
+                    <option value={100}>100</option>
+                    <option value={200}>200</option>
+                  </select>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={accountsPage <= 1}
+                    onClick={() => setAccountsPage((previous) => Math.max(1, previous - 1))}
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </Button>
+                  <span className="w-24 text-center text-xs text-muted-foreground">
+                    Page {accountsPage}/{accountsPageCount}
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={accountsPage >= accountsPageCount}
+                    onClick={() => setAccountsPage((previous) => Math.min(accountsPageCount, previous + 1))}
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+
+              {accountMatchesCount === 0 ? (
                 <div className="rounded-lg border border-dashed border-border/70 p-6 text-center text-sm text-muted-foreground">
                   {normalizedAccountsQuery ? 'No accounts matched this search.' : 'No mappings yet.'}
                   {canCreateMappings ? (
@@ -4532,7 +4606,7 @@ function App() {
                 </div>
               ) : (
                 <div className="space-y-3">
-                  {filteredGroupedMappings.map((group, groupIndex) => {
+                  {pagedGroupedMappings.map((group, groupIndex) => {
                     const canCollapseGroup = accountsViewMode === 'grouped';
                     const collapsed = canCollapseGroup ? collapsedGroupKeys[group.key] === true : false;
                     const visibleRows = visibleRowsByGroupKey[group.key] || ACCOUNT_ROWS_BATCH_SIZE;

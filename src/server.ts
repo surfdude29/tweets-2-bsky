@@ -2506,16 +2506,36 @@ app.post('/api/mappings/append-bot-name-all', authenticateToken, async (req: any
 
   for (const mapping of targets) {
     try {
+      const sourceTwitterUsername = resolveProfileSyncSourceUsername({
+        twitterUsernames: mapping.twitterUsernames,
+        fallbackSource: mapping.profileSyncSourceUsername,
+      });
+      if (!sourceTwitterUsername) {
+        failed += 1;
+        failedMappings.push({
+          id: mapping.id,
+          bskyIdentifier: mapping.bskyIdentifier,
+          error: 'Mapping has no Twitter source usernames.',
+        });
+        continue;
+      }
+
       const result = await ensureBlueskyDisplayNameBotSuffix({
         bskyIdentifier: mapping.bskyIdentifier,
         bskyPassword: mapping.bskyPassword,
         bskyServiceUrl: mapping.bskyServiceUrl,
+        twitterUsername: sourceTwitterUsername,
       });
 
       if (result.updated) {
         appended += 1;
       } else {
         alreadyAppended += 1;
+      }
+
+      if (mapping.profileSyncSourceUsername !== sourceTwitterUsername) {
+        mapping.profileSyncSourceUsername = sourceTwitterUsername;
+        changed = true;
       }
 
       if (mapping.lastMirroredDisplayName !== result.displayName) {
