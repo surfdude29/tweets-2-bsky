@@ -2334,6 +2334,71 @@ app.post('/api/mappings/:id/sync-profile-from-twitter', authenticateToken, async
   }
 });
 
+app.post('/api/mappings/:id/pull-twitter-bio', authenticateToken, async (req: any, res) => {
+  const { id } = req.params;
+  const config = getConfig();
+  const mappingIndex = config.mappings.findIndex((entry) => entry.id === id);
+  const mapping = config.mappings[mappingIndex];
+
+  if (mappingIndex === -1 || !mapping) {
+    res.status(404).json({ error: 'Mapping not found' });
+    return;
+  }
+
+  if (!canManageMapping(req.user, mapping)) {
+    res.status(403).json({ error: 'You do not have permission to update this mapping.' });
+    return;
+  }
+
+  const sourceTwitterUsername = resolveProfileSyncSourceUsername({
+    twitterUsernames: mapping.twitterUsernames,
+    requestedSource: req.body?.sourceTwitterUsername,
+    fallbackSource: mapping.profileSyncSourceUsername,
+  });
+
+  if (!sourceTwitterUsername) {
+    res.status(400).json({ error: 'Mapping has no Twitter source usernames.' });
+    return;
+  }
+
+  try {
+    const result = await syncBlueskyProfileFromTwitter({
+      twitterUsername: sourceTwitterUsername,
+      bskyIdentifier: mapping.bskyIdentifier,
+      bskyPassword: mapping.bskyPassword,
+      bskyServiceUrl: mapping.bskyServiceUrl,
+      previousSync: getMappingMirrorSyncState(mapping),
+      syncDisplayName: false,
+      syncDescription: true,
+      syncAvatar: false,
+      syncBanner: false,
+    });
+
+    const updatedMapping = applyProfileMirrorSyncState(mapping, sourceTwitterUsername, result);
+    config.mappings[mappingIndex] = updatedMapping;
+    saveConfig(config);
+
+    for (const key of [
+      normalizeActor(updatedMapping.bskyIdentifier),
+      normalizeActor(result.bsky.handle),
+      normalizeActor(result.bsky.did),
+    ]) {
+      if (key) {
+        profileCache.delete(key);
+      }
+    }
+
+    res.json({
+      success: true,
+      sourceTwitterUsername,
+      mapping: sanitizeMapping(updatedMapping, createUserLookupById(config), req.user),
+      ...result,
+    });
+  } catch (error) {
+    res.status(400).json({ error: getErrorMessage(error, 'Failed to pull Twitter bio.') });
+  }
+});
+
 app.post('/api/mappings/bot-label-all', authenticateToken, async (req: any, res) => {
   if (!canManageOwnMappings(req.user) && !canManageAllMappings(req.user)) {
     res.status(403).json({ error: 'You do not have permission to update mappings.' });

@@ -17,6 +17,24 @@ const MIRROR_SUFFIX = '{bot}';
 const FEDIVERSE_BRIDGE_HANDLE = 'ap.brid.gy';
 const MIN_BRIDGE_ACCOUNT_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const BOT_SELF_LABEL_VALUE = 'bot';
+const TCO_LINK_REGEX = /https:\/\/t\.co\/[a-zA-Z0-9]+/gi;
+const TRACKING_QUERY_PARAM_PREFIXES = ['utm_'];
+const TRACKING_QUERY_PARAM_NAMES = new Set([
+  'fbclid',
+  'gclid',
+  'dclid',
+  'yclid',
+  'mc_cid',
+  'mc_eid',
+  'mkt_tok',
+  'igshid',
+  'ref',
+  'ref_src',
+  'ref_url',
+  'source',
+  's',
+  'si',
+]);
 
 type ProfileImageKind = 'avatar' | 'banner';
 
@@ -208,6 +226,92 @@ const truncateGraphemes = (value: string, limit: number): string => {
 };
 
 const normalizeWhitespace = (value: string): string => value.replace(/\s+/g, ' ').trim();
+
+const shouldStripTrackingParam = (rawName: string): boolean => {
+  const name = rawName.trim().toLowerCase();
+  if (!name) {
+    return false;
+  }
+
+  if (TRACKING_QUERY_PARAM_NAMES.has(name)) {
+    return true;
+  }
+
+  return TRACKING_QUERY_PARAM_PREFIXES.some((prefix) => name.startsWith(prefix));
+};
+
+const stripTrackingParamsFromUrl = (rawUrl: string): string => {
+  try {
+    const parsed = new URL(rawUrl);
+    const names = [...parsed.searchParams.keys()];
+    for (const name of names) {
+      if (shouldStripTrackingParam(name)) {
+        parsed.searchParams.delete(name);
+      }
+    }
+    return parsed.toString();
+  } catch {
+    return rawUrl;
+  }
+};
+
+const resolveRedirectUrl = (response: unknown): string | undefined => {
+  if (!isRecord(response)) {
+    return undefined;
+  }
+  const request = isRecord(response.request) ? response.request : undefined;
+  const res = request && isRecord(request.res) ? request.res : undefined;
+  return normalizeOptionalString(res?.responseUrl);
+};
+
+const expandShortUrl = async (shortUrl: string): Promise<string> => {
+  try {
+    const head = await axios.head(shortUrl, {
+      maxRedirects: 8,
+      timeout: 8_000,
+      validateStatus: (status) => status >= 200 && status < 400,
+    });
+    return resolveRedirectUrl(head) || shortUrl;
+  } catch {
+    try {
+      const get = await axios.get(shortUrl, {
+        maxRedirects: 8,
+        timeout: 8_000,
+        responseType: 'stream',
+        validateStatus: (status) => status >= 200 && status < 400,
+      });
+      try {
+        get.data?.destroy?.();
+      } catch {
+        // Ignore stream cleanup errors.
+      }
+      return resolveRedirectUrl(get) || shortUrl;
+    } catch {
+      return shortUrl;
+    }
+  }
+};
+
+const expandAndNormalizeTwitterBioLinks = async (biography?: string): Promise<string | undefined> => {
+  const bio = normalizeOptionalString(biography);
+  if (!bio) {
+    return undefined;
+  }
+
+  let expandedBio = bio;
+  const matches = expandedBio.match(TCO_LINK_REGEX) || [];
+  const uniqueMatches = [...new Set(matches)];
+  for (const tcoUrl of uniqueMatches) {
+    const resolvedUrl = await expandShortUrl(tcoUrl);
+    const normalizedUrl = stripTrackingParamsFromUrl(resolvedUrl);
+    if (!normalizedUrl || normalizedUrl === tcoUrl) {
+      continue;
+    }
+    expandedBio = expandedBio.split(tcoUrl).join(normalizedUrl);
+  }
+
+  return normalizeOptionalString(expandedBio);
+};
 
 const normalizeTwitterAvatarUrl = (url?: string): string | undefined => {
   if (!url) return undefined;
@@ -410,7 +514,7 @@ export const fetchTwitterMirrorProfile = async (inputUsername: string): Promise<
       const profile = await fetchTwitterProfileWithCookies(username, cookieSet);
       const resolvedUsername = normalizeTwitterUsername(profile.username || username);
       const cleanedName = normalizeOptionalString(profile.name);
-      const cleanedBio = normalizeOptionalString(profile.biography);
+      const cleanedBio = await expandAndNormalizeTwitterBioLinks(profile.biography);
 
       return {
         username: resolvedUsername,
@@ -732,16 +836,19 @@ export const syncBlueskyProfileFromTwitter = async (args: {
   bskyPassword: string;
   bskyServiceUrl?: string;
   previousSync?: ProfileMirrorSyncState;
+  syncDisplayName?: boolean;
   syncDescription?: boolean;
+  syncAvatar?: boolean;
+  syncBanner?: boolean;
 }): Promise<MirrorProfileSyncResult> => {
   const twitterProfile = await fetchTwitterMirrorProfile(args.twitterUsername);
   const nextMirrorState = buildMirrorStateFromTwitterProfile(twitterProfile);
   const rawChanged = hasMirrorStateChanges(args.previousSync, nextMirrorState);
   const changed = {
-    displayName: rawChanged.displayName,
+    displayName: (args.syncDisplayName ?? true) ? rawChanged.displayName : false,
     description: (args.syncDescription ?? true) ? rawChanged.description : false,
-    avatar: rawChanged.avatar,
-    banner: rawChanged.banner,
+    avatar: (args.syncAvatar ?? true) ? rawChanged.avatar : false,
+    banner: (args.syncBanner ?? true) ? rawChanged.banner : false,
   };
   const bsky = await validateBlueskyCredentials({
     bskyIdentifier: args.bskyIdentifier,

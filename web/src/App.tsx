@@ -44,7 +44,12 @@ type ThemeMode = 'system' | 'light' | 'dark';
 type AuthView = 'login' | 'register';
 type DashboardTab = 'overview' | 'accounts' | 'posts' | 'activity' | 'settings';
 type SettingsSection = 'account' | 'users' | 'twitter' | 'ai' | 'data';
-type BulkAccountsAction = 'sync_profiles' | 'bridge_all' | 'apply_bot_label' | 'append_bot_name';
+type BulkAccountsAction =
+  | 'sync_profiles'
+  | 'pull_twitter_bio'
+  | 'bridge_all'
+  | 'apply_bot_label'
+  | 'append_bot_name';
 
 type AppState = 'idle' | 'checking' | 'backfilling' | 'pacing' | 'processing';
 
@@ -810,7 +815,9 @@ function App() {
   const [isMirrorPreviewLoading, setIsMirrorPreviewLoading] = useState(false);
   const [isCredentialValidationBusy, setIsCredentialValidationBusy] = useState(false);
   const [syncingProfileMappingId, setSyncingProfileMappingId] = useState<string | null>(null);
+  const [pullingBioMappingId, setPullingBioMappingId] = useState<string | null>(null);
   const [isSyncAllProfilesBusy, setIsSyncAllProfilesBusy] = useState(false);
+  const [isPullBioAllBusy, setIsPullBioAllBusy] = useState(false);
   const [isBotLabelAllBusy, setIsBotLabelAllBusy] = useState(false);
   const [isAppendBotNameAllBusy, setIsAppendBotNameAllBusy] = useState(false);
   const [bridgingMappingId, setBridgingMappingId] = useState<string | null>(null);
@@ -846,6 +853,8 @@ function App() {
   const [accountsViewMode, setAccountsViewMode] = useState<'grouped' | 'global'>('grouped');
   const [accountsSearchQuery, setAccountsSearchQuery] = useState('');
   const [accountsBulkAction, setAccountsBulkAction] = useState<BulkAccountsAction>('sync_profiles');
+  const [accountsBulkScope, setAccountsBulkScope] = useState<'all' | 'selected'>('all');
+  const [selectedAccountMappingIds, setSelectedAccountMappingIds] = useState<string[]>([]);
   const [visibleRowsByGroupKey, setVisibleRowsByGroupKey] = useState<Record<string, number>>({});
   const [showAccountAvatars, setShowAccountAvatars] = useState(false);
   const [showAccountBios, setShowAccountBios] = useState(false);
@@ -1633,10 +1642,12 @@ function App() {
   );
   const isAnyBulkAccountsActionBusy =
     isSyncAllProfilesBusy ||
+    isPullBioAllBusy ||
     isBridgeAllBusy ||
     isBotLabelAllBusy ||
     isAppendBotNameAllBusy ||
     Boolean(syncingProfileMappingId) ||
+    Boolean(pullingBioMappingId) ||
     Boolean(bridgingMappingId);
   const bridgedMappingsForView = useMemo(
     () =>
@@ -1855,6 +1866,44 @@ function App() {
       (canManageOwnMappings && (!mapping.createdByUserId || mapping.createdByUserId === me?.id)),
     [canManageAllMappings, canManageOwnMappings, me?.id],
   );
+  const manageableAccountMappingsForView = useMemo(
+    () => accountMappingsForView.filter((mapping) => canManageMapping(mapping)),
+    [accountMappingsForView, canManageMapping],
+  );
+  const manageableMappingIdsForView = useMemo(
+    () => new Set(manageableAccountMappingsForView.map((mapping) => mapping.id)),
+    [manageableAccountMappingsForView],
+  );
+  const selectedAccountMappingIdSet = useMemo(() => new Set(selectedAccountMappingIds), [selectedAccountMappingIds]);
+  const selectedManageableMappingsForView = useMemo(
+    () => manageableAccountMappingsForView.filter((mapping) => selectedAccountMappingIdSet.has(mapping.id)),
+    [manageableAccountMappingsForView, selectedAccountMappingIdSet],
+  );
+  const selectedManageableMappingsCount = selectedManageableMappingsForView.length;
+  const filteredManageableMappingIds = useMemo(() => {
+    const seen = new Set<string>();
+    for (const group of filteredGroupedMappings) {
+      for (const mapping of group.mappings) {
+        if (seen.has(mapping.id) || !canManageMapping(mapping)) {
+          continue;
+        }
+        seen.add(mapping.id);
+      }
+    }
+    return [...seen];
+  }, [canManageMapping, filteredGroupedMappings]);
+  const allFilteredManageableSelected =
+    filteredManageableMappingIds.length > 0 &&
+    filteredManageableMappingIds.every((mappingId) => selectedAccountMappingIdSet.has(mappingId));
+  useEffect(() => {
+    setSelectedAccountMappingIds((previous) => {
+      const next = previous.filter((mappingId) => manageableMappingIdsForView.has(mappingId));
+      if (next.length === previous.length) {
+        return previous;
+      }
+      return next;
+    });
+  }, [manageableMappingIdsForView]);
   const twitterConfigured = Boolean(twitterConfig.authToken && twitterConfig.ct0);
   const aiConfigured = Boolean(aiConfig.apiKey);
   const sectionDefaultExpanded = useMemo<Record<SettingsSection, boolean>>(
@@ -2400,7 +2449,105 @@ function App() {
     });
   };
 
-  const handleSyncAllProfilesFromTwitter = async () => {
+  const pullTwitterBioForMapping = async (
+    mapping: AccountMapping,
+    options?: {
+      confirm?: boolean;
+      showNoticeOnResult?: boolean;
+      refreshAfter?: boolean;
+    },
+  ): Promise<{ ok: boolean; skipped: boolean }> => {
+    if (!authHeaders) {
+      return { ok: false, skipped: false };
+    }
+    if (!canManageMapping(mapping)) {
+      if (options?.showNoticeOnResult !== false) {
+        showNotice('error', 'You do not have permission to update this mapping.');
+      }
+      return { ok: false, skipped: false };
+    }
+
+    const sourceTwitterUsername = resolveProfileSyncSource(mapping, options?.showNoticeOnResult === false);
+    if (!sourceTwitterUsername) {
+      return { ok: false, skipped: false };
+    }
+
+    if (options?.confirm !== false) {
+      const confirmed = window.confirm(
+        `Pull Twitter bio from @${sourceTwitterUsername}? This updates only the bio/description on Bluesky.`,
+      );
+      if (!confirmed) {
+        return { ok: false, skipped: false };
+      }
+    }
+
+    setPullingBioMappingId(mapping.id);
+    try {
+      const response = await axios.post<MirrorProfileSyncResult>(
+        `/api/mappings/${mapping.id}/pull-twitter-bio`,
+        { sourceTwitterUsername },
+        { headers: authHeaders },
+      );
+
+      const result = response.data;
+      const warnings = result?.warnings || [];
+      const skipped = Boolean(result?.skipped);
+
+      if (result?.mapping) {
+        setMappings((previous) => previous.map((entry) => (entry.id === mapping.id ? result.mapping || entry : entry)));
+      }
+
+      if (options?.showNoticeOnResult !== false) {
+        if (skipped) {
+          showNotice('info', `No bio changes detected for @${sourceTwitterUsername}.`);
+        } else if (warnings.length > 0) {
+          showNotice(
+            'info',
+            `Bio pulled from @${sourceTwitterUsername} with ${warnings.length} warning(s). First warning: ${warnings[0]}`,
+          );
+        } else {
+          showNotice('success', `Bio pulled from @${sourceTwitterUsername}.`);
+        }
+      }
+
+      if (options?.refreshAfter !== false) {
+        await fetchData();
+      }
+
+      return { ok: true, skipped };
+    } catch (error) {
+      if (options?.showNoticeOnResult !== false) {
+        handleAuthFailure(error, 'Failed to pull Twitter bio.');
+      }
+      return { ok: false, skipped: false };
+    } finally {
+      setPullingBioMappingId((previous) => (previous === mapping.id ? null : previous));
+    }
+  };
+
+  const handlePullTwitterBio = async (mapping: AccountMapping) => {
+    await pullTwitterBioForMapping(mapping, {
+      confirm: true,
+      showNoticeOnResult: true,
+      refreshAfter: true,
+    });
+  };
+
+  const resolveBulkAccountTargets = (actionLabel: string): AccountMapping[] => {
+    const fallbackTargets = manageableAccountMappingsForView;
+    if (accountsBulkScope !== 'selected') {
+      return fallbackTargets;
+    }
+
+    if (selectedManageableMappingsForView.length > 0) {
+      return selectedManageableMappingsForView;
+    }
+
+    showNotice('info', `No selected accounts available for ${actionLabel}.`);
+    return [];
+  };
+
+  const handleSyncAllProfilesFromTwitter = async (targetsOverride?: AccountMapping[]) => {
     if (!authHeaders) {
       return;
     }
@@ -2409,7 +2556,7 @@ function App() {
       return;
     }
 
-    const candidates = accountMappingsForView.filter((mapping) => canManageMapping(mapping));
+    const candidates = targetsOverride && targetsOverride.length > 0 ? targetsOverride : manageableAccountMappingsForView;
     if (candidates.length === 0) {
       showNotice('info', 'No accounts available for profile sync.');
       return;
@@ -2454,7 +2601,63 @@ function App() {
     }
   };
 
-  const handleAddBotLabelToAllAccounts = async () => {
+  const handlePullTwitterBioForAccounts = async (targetsOverride?: AccountMapping[]) => {
+    if (!authHeaders) {
+      return;
+    }
+    if (isAnyBulkAccountsActionBusy) {
+      showNotice('info', 'A bulk accounts action is already running. Please wait.');
+      return;
+    }
+
+    const candidates = targetsOverride && targetsOverride.length > 0 ? targetsOverride : manageableAccountMappingsForView;
+    if (candidates.length === 0) {
+      showNotice('info', 'No accounts available for Twitter bio pull.');
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Pull Twitter bio for ${candidates.length} account(s), one at a time? This updates only Bluesky description.`,
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setIsPullBioAllBusy(true);
+    let syncedCount = 0;
+    let skippedCount = 0;
+    let failedCount = 0;
+
+    try {
+      for (const mapping of candidates) {
+        const outcome = await pullTwitterBioForMapping(mapping, {
+          confirm: false,
+          showNoticeOnResult: false,
+          refreshAfter: false,
+        });
+
+        if (!outcome.ok) {
+          failedCount += 1;
+          continue;
+        }
+        if (outcome.skipped) {
+          skippedCount += 1;
+        } else {
+          syncedCount += 1;
+        }
+      }
+
+      await fetchData();
+      showNotice(
+        failedCount > 0 ? 'info' : 'success',
+        `Pull bio complete: ${syncedCount} updated, ${skippedCount} unchanged, ${failedCount} failed.`,
+      );
+    } finally {
+      setIsPullBioAllBusy(false);
+    }
+  };
+
+  const handleAddBotLabelToAllAccounts = async (targetsOverride?: AccountMapping[]) => {
     if (!authHeaders) {
       return;
     }
@@ -2463,7 +2666,7 @@ function App() {
       return;
     }
 
-    const candidates = accountMappingsForView.filter((mapping) => canManageMapping(mapping));
+    const candidates = targetsOverride && targetsOverride.length > 0 ? targetsOverride : manageableAccountMappingsForView;
     if (candidates.length === 0) {
       showNotice('info', 'No accounts available for bot label update.');
       return;
@@ -2499,7 +2702,7 @@ function App() {
     }
   };
 
-  const handleAppendBotNameToAllAccounts = async () => {
+  const handleAppendBotNameToAllAccounts = async (targetsOverride?: AccountMapping[]) => {
     if (!authHeaders) {
       return;
     }
@@ -2508,7 +2711,7 @@ function App() {
       return;
     }
 
-    const candidates = accountMappingsForView.filter((mapping) => canManageMapping(mapping));
+    const candidates = targetsOverride && targetsOverride.length > 0 ? targetsOverride : manageableAccountMappingsForView;
     if (candidates.length === 0) {
       showNotice('info', 'No accounts available for display-name suffix update.');
       return;
@@ -2545,19 +2748,67 @@ function App() {
   };
 
   const handleApplyAllAccountsAction = async () => {
+    const actionLabel =
+      accountsBulkAction === 'sync_profiles'
+        ? 'profile sync'
+        : accountsBulkAction === 'pull_twitter_bio'
+          ? 'Twitter bio pull'
+          : accountsBulkAction === 'bridge_all'
+            ? 'fediverse bridge'
+            : accountsBulkAction === 'apply_bot_label'
+              ? 'bot label update'
+              : 'display-name suffix update';
+    const targets = resolveBulkAccountTargets(actionLabel);
+    if (targets.length === 0) {
+      return;
+    }
+
     if (accountsBulkAction === 'sync_profiles') {
-      await handleSyncAllProfilesFromTwitter();
+      await handleSyncAllProfilesFromTwitter(targets);
+      return;
+    }
+    if (accountsBulkAction === 'pull_twitter_bio') {
+      await handlePullTwitterBioForAccounts(targets);
       return;
     }
     if (accountsBulkAction === 'bridge_all') {
-      await handleBridgeAllEligible();
+      await handleBridgeAllEligible(targets);
       return;
     }
     if (accountsBulkAction === 'apply_bot_label') {
-      await handleAddBotLabelToAllAccounts();
+      await handleAddBotLabelToAllAccounts(targets);
       return;
     }
-    await handleAppendBotNameToAllAccounts();
+    await handleAppendBotNameToAllAccounts(targets);
+  };
+
+  const toggleAccountMappingSelection = (mappingId: string, checked: boolean) => {
+    setSelectedAccountMappingIds((previous) => {
+      if (checked) {
+        if (previous.includes(mappingId)) {
+          return previous;
+        }
+        return [...previous, mappingId];
+      }
+      return previous.filter((id) => id !== mappingId);
+    });
+  };
+
+  const toggleSelectAllFilteredManageable = (checked: boolean) => {
+    setSelectedAccountMappingIds((previous) => {
+      if (!checked) {
+        return previous.filter((mappingId) => !filteredManageableMappingIds.includes(mappingId));
+      }
+      const seen = new Set(previous);
+      for (const mappingId of filteredManageableMappingIds) {
+        seen.add(mappingId);
+      }
+      return [...seen];
+    });
+  };
+
+  const clearSelectedAccountMappings = () => {
+    setSelectedAccountMappingIds([]);
   };
 
   const showMoreRowsForGroup = useCallback((groupKey: string) => {
@@ -2693,16 +2944,16 @@ function App() {
     }
   };
 
-  const handleBridgeAllEligible = async () => {
+  const handleBridgeAllEligible = async (targetsOverride?: AccountMapping[]) => {
     if (!authHeaders) {
       return;
     }
-    if (isSyncAllProfilesBusy || Boolean(syncingProfileMappingId)) {
-      showNotice('info', 'Profile sync is currently running. Please wait before bridge-all.');
+    if (isSyncAllProfilesBusy || isPullBioAllBusy || Boolean(syncingProfileMappingId) || Boolean(pullingBioMappingId)) {
+      showNotice('info', 'Profile/bio sync is currently running. Please wait before bridge-all.');
       return;
     }
 
-    const manageable = accountMappingsForView.filter((mapping) => canManageMapping(mapping));
+    const manageable = targetsOverride && targetsOverride.length > 0 ? targetsOverride : manageableAccountMappingsForView;
     if (manageable.length === 0) {
       showNotice('info', 'No accounts available for fediverse bridge.');
       return;
@@ -4054,21 +4305,33 @@ function App() {
                     disabled={isAnyBulkAccountsActionBusy}
                     onChange={(event) => setAccountsBulkAction(event.target.value as BulkAccountsAction)}
                   >
-                    <option value="sync_profiles">Apply profile sync to all accounts</option>
+                    <option value="sync_profiles">Apply profile sync to accounts</option>
+                    <option value="pull_twitter_bio">Pull Twitter bio to accounts</option>
                     <option value="bridge_all">Apply fediverse bridge to eligible accounts</option>
-                    <option value="apply_bot_label">Apply automated-account label to all accounts</option>
-                    <option value="append_bot_name">Apply {'{bot}'} display-name suffix to all accounts</option>
+                    <option value="apply_bot_label">Apply automated-account label to accounts</option>
+                    <option value="append_bot_name">Apply {'{bot}'} display-name suffix to accounts</option>
+                  </select>
+                  <select
+                    className={cn(selectClassName, 'h-9 w-[200px] px-2 py-1 text-xs')}
+                    value={accountsBulkScope}
+                    disabled={isAnyBulkAccountsActionBusy}
+                    onChange={(event) => setAccountsBulkScope(event.target.value as 'all' | 'selected')}
+                  >
+                    <option value="all">Target all manageable</option>
+                    <option value="selected">Target selected only</option>
                   </select>
                   <Button
                     size="sm"
                     variant="outline"
-                    disabled={isAnyBulkAccountsActionBusy}
+                    disabled={isAnyBulkAccountsActionBusy || (accountsBulkScope === 'selected' && selectedManageableMappingsCount === 0)}
                     onClick={() => {
                       void handleApplyAllAccountsAction();
                     }}
                   >
                     {isAnyBulkAccountsActionBusy ? (
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : accountsBulkAction === 'pull_twitter_bio' ? (
+                      <Download className="mr-2 h-4 w-4" />
                     ) : accountsBulkAction === 'bridge_all' ? (
                       <Link2 className="mr-2 h-4 w-4" />
                     ) : accountsBulkAction === 'sync_profiles' ? (
@@ -4078,6 +4341,8 @@ function App() {
                     )}
                     {accountsBulkAction === 'sync_profiles'
                       ? 'Apply sync all'
+                      : accountsBulkAction === 'pull_twitter_bio'
+                        ? 'Apply pull bio'
                       : accountsBulkAction === 'bridge_all'
                         ? 'Apply bridge all'
                         : accountsBulkAction === 'apply_bot_label'
@@ -4092,6 +4357,9 @@ function App() {
                     </Badge>
                   ) : null}
                   <Badge variant="outline">{accountMappingsForView.length} configured</Badge>
+                  <Badge variant={selectedManageableMappingsCount > 0 ? 'success' : 'outline'}>
+                    {selectedManageableMappingsCount} selected
+                  </Badge>
                   <Badge variant="outline">{botLabeledMappingsForView.length} bot-labeled</Badge>
                 </div>
               </div>
@@ -4169,6 +4437,24 @@ function App() {
                   ) : null}
                 </div>
                 <div className="flex flex-wrap items-end justify-end gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={filteredManageableMappingIds.length === 0}
+                    onClick={() => toggleSelectAllFilteredManageable(!allFilteredManageableSelected)}
+                  >
+                    {allFilteredManageableSelected
+                      ? `Unselect matched (${filteredManageableMappingIds.length})`
+                      : `Select matched (${filteredManageableMappingIds.length})`}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={selectedManageableMappingsCount === 0}
+                    onClick={clearSelectedAccountMappings}
+                  >
+                    Clear selected
+                  </Button>
                   <Button
                     size="sm"
                     variant="outline"
@@ -4329,6 +4615,8 @@ function App() {
                                       const bridging = bridgingMappingId === mapping.id;
                                       const mappingGroup = getMappingGroupMeta(mapping);
                                       const syncingProfile = syncingProfileMappingId === mapping.id;
+                                      const pullingBio = pullingBioMappingId === mapping.id;
+                                      const isSelectedForBulk = selectedAccountMappingIdSet.has(mapping.id);
 
                                       return (
                                         <tr
@@ -4429,6 +4717,20 @@ function App() {
                                           </td>
                                           <td className="px-2 py-3 align-top">
                                             <div className="flex flex-wrap justify-end gap-1">
+                                              {canManageThisMapping ? (
+                                                <label className="inline-flex items-center gap-1 rounded border border-border/70 px-2 py-1 text-xs text-muted-foreground">
+                                                  <input
+                                                    type="checkbox"
+                                                    className="h-3.5 w-3.5 rounded border-border"
+                                                    checked={isSelectedForBulk}
+                                                    disabled={isAnyBulkAccountsActionBusy}
+                                                    onChange={(event) =>
+                                                      toggleAccountMappingSelection(mapping.id, event.target.checked)
+                                                    }
+                                                  />
+                                                  Select
+                                                </label>
+                                              ) : null}
                                               <select
                                                 className={cn(selectClassName, 'h-9 w-44 px-2 py-1 text-xs')}
                                                 value={mappingGroup.key}
@@ -4505,6 +4807,7 @@ function App() {
                                                       isBridgeAllBusy ||
                                                       isAnyBulkAccountsActionBusy ||
                                                       Boolean(syncingProfileMappingId) ||
+                                                      Boolean(pullingBioMappingId) ||
                                                       isSyncAllProfilesBusy ||
                                                       Boolean(bridgingMappingId)
                                                     }
@@ -4518,6 +4821,28 @@ function App() {
                                                       <RefreshCw className="mr-1 h-4 w-4" />
                                                     )}
                                                     Sync Profile
+                                                  </Button>
+                                                  <Button
+                                                    variant="outline"
+                                                    size="sm"
+                                                    disabled={
+                                                      isBridgeAllBusy ||
+                                                      isAnyBulkAccountsActionBusy ||
+                                                      Boolean(syncingProfileMappingId) ||
+                                                      Boolean(pullingBioMappingId) ||
+                                                      isSyncAllProfilesBusy ||
+                                                      Boolean(bridgingMappingId)
+                                                    }
+                                                    onClick={() => {
+                                                      void handlePullTwitterBio(mapping);
+                                                    }}
+                                                  >
+                                                    {pullingBio ? (
+                                                      <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                                                    ) : (
+                                                      <Download className="mr-1 h-4 w-4" />
+                                                    )}
+                                                    Pull Twitter Bio
                                                   </Button>
                                                   {canUseFediverseBridge && !isFediverseBridged ? (
                                                     <Button
