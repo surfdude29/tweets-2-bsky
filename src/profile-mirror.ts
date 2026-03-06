@@ -36,6 +36,11 @@ const TRACKING_QUERY_PARAM_NAMES = new Set([
   's',
   'si',
 ]);
+const URL_EXPANSION_HEADERS = {
+  'user-agent':
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+};
 
 type ProfileImageKind = 'avatar' | 'banner';
 
@@ -274,32 +279,77 @@ const resolveRedirectUrl = (response: unknown): string | undefined => {
   return normalizeOptionalString(res?.responseUrl);
 };
 
+const decodeEscapedUrlValue = (value: string): string => {
+  return value
+    .replace(/\\\//g, '/')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .trim();
+};
+
+const extractRedirectUrlFromHtml = (html: string): string | undefined => {
+  const metaRefresh =
+    html.match(/http-equiv=["']refresh["'][^>]*content=["'][^"']*url=([^"'>\s]+)/i)?.[1] ||
+    html.match(/<meta[^>]+content=["'][^"']*url=([^"'>\s]+)/i)?.[1];
+  if (metaRefresh) {
+    return decodeEscapedUrlValue(metaRefresh);
+  }
+
+  const locationReplace =
+    html.match(/location\.replace\(\s*(["'])(.+?)\1\s*\)/i)?.[2] ||
+    html.match(/window\.location(?:\.href)?\s*=\s*(["'])(.+?)\1/i)?.[2];
+  if (locationReplace) {
+    return decodeEscapedUrlValue(locationReplace);
+  }
+
+  const titleUrl = html.match(/<title>\s*(https?:\/\/[^<\s]+)\s*<\/title>/i)?.[1];
+  if (titleUrl) {
+    return decodeEscapedUrlValue(titleUrl);
+  }
+
+  return undefined;
+};
+
 const expandShortUrl = async (shortUrl: string): Promise<string> => {
   try {
     const head = await axios.head(shortUrl, {
       maxRedirects: 8,
       timeout: 8_000,
+      headers: URL_EXPANSION_HEADERS,
       validateStatus: (status) => status >= 200 && status < 400,
     });
-    return resolveRedirectUrl(head) || shortUrl;
-  } catch {
-    try {
-      const get = await axios.get(shortUrl, {
-        maxRedirects: 8,
-        timeout: 8_000,
-        responseType: 'stream',
-        validateStatus: (status) => status >= 200 && status < 400,
-      });
-      try {
-        get.data?.destroy?.();
-      } catch {
-        // Ignore stream cleanup errors.
-      }
-      return resolveRedirectUrl(get) || shortUrl;
-    } catch {
-      return shortUrl;
+    const resolvedByHead = resolveRedirectUrl(head);
+    if (resolvedByHead && resolvedByHead !== shortUrl) {
+      return resolvedByHead;
     }
+  } catch {
+    // Fall through to GET-based resolver.
   }
+
+  try {
+    const get = await axios.get<string>(shortUrl, {
+      maxRedirects: 8,
+      timeout: 8_000,
+      headers: URL_EXPANSION_HEADERS,
+      maxContentLength: 512 * 1024,
+      validateStatus: (status) => status >= 200 && status < 400,
+    });
+
+    const resolvedByGet = resolveRedirectUrl(get);
+    if (resolvedByGet && resolvedByGet !== shortUrl) {
+      return resolvedByGet;
+    }
+
+    const html = typeof get.data === 'string' ? get.data : '';
+    const resolvedFromHtml = extractRedirectUrlFromHtml(html);
+    if (resolvedFromHtml) {
+      return resolvedFromHtml;
+    }
+  } catch {
+    return shortUrl;
+  }
+
+  return shortUrl;
 };
 
 const expandAndNormalizeTwitterBioLinks = async (biography?: string): Promise<string | undefined> => {
@@ -497,15 +547,15 @@ export const buildMirroredDescription = (biography: string | undefined, username
     return truncateGraphemes(intro, 256);
   }
 
-  const full = `${intro}\n\n"${bio}"`;
+  const full = `${intro}\n\n${bio}`;
   if (getGraphemeSegments(full).length <= 256) {
     return full;
   }
 
-  const reserved = getGraphemeSegments(`${intro}\n\n""`).length;
+  const reserved = getGraphemeSegments(`${intro}\n\n`).length;
   const maxBioLength = Math.max(0, 256 - reserved);
   const truncatedBio = truncateGraphemes(bio, maxBioLength);
-  return `${intro}\n\n"${truncatedBio}"`;
+  return `${intro}\n\n${truncatedBio}`;
 };
 
 export const fetchTwitterMirrorProfile = async (inputUsername: string): Promise<TwitterMirrorProfile> => {
