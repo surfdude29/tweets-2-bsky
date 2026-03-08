@@ -9,6 +9,12 @@ Most people should use Docker. It is the simplest setup and includes full featur
 
 Prerequisite: Docker Desktop (Windows/macOS) or Docker Engine (Linux). On Windows, use Docker Desktop in Linux container mode.
 
+Prefer using the included compose file so the named volume is always attached:
+
+```bash
+docker compose up -d
+```
+
 ### 1) Run the latest image
 
 macOS/Linux (bash):
@@ -29,6 +35,8 @@ docker run -d --name tweets-2-bsky -p 3000:3000 -v tweets2bsky_data:/app/data --
 ```
 
 Open `http://localhost:3000`.
+
+Important: keep `-v tweets2bsky_data:/app/data` (or an equivalent bind mount). Without a persistent volume, mappings and history are lost when the container is recreated.
 
 If port `3000` is already in use, change only the first port (example: `-p 3001:3000`).
 
@@ -121,6 +129,8 @@ This repo now includes a single `Dockerfile` that runs:
 
 The container aims for feature parity with normal installs while giving one-command startup.
 
+Tip: the repository includes `docker-compose.yml` with a named `tweets2bsky_data` volume, so `docker compose up -d` is the safest default.
+
 ### 1) Pull and run (recommended)
 
 After publishing an image (see [Publishing](#publishing-multi-platform-images-linuxamd64--linuxarm64)), run:
@@ -178,6 +188,7 @@ Common variables:
 - `CORS_ALLOWED_ORIGINS`
 - `BSKY_APPVIEW_URL` (optional override)
 - `SCHEDULED_ACCOUNT_TIMEOUT_MS` (default `480000` / 8 minutes, forces a skip when one source account hangs during scheduled checks)
+- `TWEETS2BSKY_DATA_DIR` (default `/app/data` in Docker; keep aligned with your mounted data volume path)
 
 ### 4) Persistent data inside Docker
 
@@ -187,7 +198,7 @@ Store all app state in `/app/data` (mounted via volume):
 - `/app/data/database.sqlite`
 - `/app/data/.jwt-secret`
 
-Note: inside the container, `/app/config.json` is linked to `/app/data/config.json` so one volume preserves everything important.
+The app reads persistent files from `TWEETS2BSKY_DATA_DIR` (defaults to `/app/data` in Docker), so a single mounted volume preserves everything important.
 
 ### 5) CLI usage in container
 

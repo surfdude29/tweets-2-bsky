@@ -120,6 +120,12 @@ docker volume create tweets2bsky_data
 docker run -d --name tweets-2-bsky -p 3000:3000 -v tweets2bsky_data:/app/data ghcr.io/j4ckxyz/tweets-2-bsky:latest
 ```
 
+The container stores persistent state under `TWEETS2BSKY_DATA_DIR` (default `/app/data`). If you mount a different path, set that env var to match:
+
+```bash
+docker run -d --name tweets-2-bsky -p 3000:3000 -v /host/path:/persist -e TWEETS2BSKY_DATA_DIR=/persist ghcr.io/j4ckxyz/tweets-2-bsky:latest
+```
+
 ### Docker: updating image
 In Docker mode, update by pulling a newer image and recreating the container with the same volume.
 `/api/update` / `update.sh` are source-install workflows.

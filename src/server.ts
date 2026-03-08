@@ -31,6 +31,7 @@ import {
   syncBlueskyProfileFromTwitter,
   validateBlueskyCredentials,
 } from './profile-mirror.js';
+import { JWT_SECRET_FILE_PATH, UPDATE_LOG_DIR } from './storage-paths.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -39,14 +40,12 @@ const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = (process.env.HOST || process.env.BIND_HOST || '0.0.0.0').trim() || '0.0.0.0';
 const APP_ROOT_DIR = path.join(__dirname, '..');
-const JWT_SECRET_FILE_PATH = path.join(APP_ROOT_DIR, 'data', '.jwt-secret');
 const jwtSecretFromEnv = process.env.JWT_SECRET?.trim();
 const JWT_EXPIRES_IN = ((process.env.JWT_EXPIRES_IN || '30d').trim() || '30d') as SignOptions['expiresIn'];
 const WEB_DIST_DIR = path.join(APP_ROOT_DIR, 'web', 'dist');
 const LEGACY_PUBLIC_DIR = path.join(APP_ROOT_DIR, 'public');
 const PACKAGE_JSON_PATH = path.join(APP_ROOT_DIR, 'package.json');
 const UPDATE_SCRIPT_PATH = path.join(APP_ROOT_DIR, 'update.sh');
-const UPDATE_LOG_DIR = path.join(APP_ROOT_DIR, 'data');
 const staticAssetsDir = fs.existsSync(path.join(WEB_DIST_DIR, 'index.html')) ? WEB_DIST_DIR : LEGACY_PUBLIC_DIR;
 const BSKY_APPVIEW_URL = process.env.BSKY_APPVIEW_URL || 'https://public.api.bsky.app';
 const POST_VIEW_CACHE_TTL_MS = 60_000;

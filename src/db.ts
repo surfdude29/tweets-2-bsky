@@ -1,6 +1,4 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { DB_PATH } from './storage-paths.js';
 
 interface DbStatement {
   get: (...params: any[]) => unknown;
@@ -14,16 +12,6 @@ interface DbLike {
   transaction: <T extends (...args: any[]) => any>(fn: T) => T;
   pragma?: (sql: string) => unknown;
 }
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-const DB_DIR = path.join(__dirname, '..', 'data');
-if (!fs.existsSync(DB_DIR)) {
-  fs.mkdirSync(DB_DIR);
-}
-
-const DB_PATH = path.join(DB_DIR, 'database.sqlite');
 
 const db: DbLike = await (async () => {
   if (typeof process.versions.bun === 'string') {

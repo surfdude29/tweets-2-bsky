@@ -1,0 +1,15 @@
+services:
+  tweets-2-bsky:
+    image: j4ckxyz/tweets-2-bsky:latest
+    container_name: tweets-2-bsky
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      TWEETS2BSKY_DATA_DIR: /app/data
+    volumes:
+      - tweets2bsky_data:/app/data
+
+volumes:
+  tweets2bsky_data:
+    name: tweets2bsky_data
